@@ -55,10 +55,11 @@ class ConfigTests(unittest.TestCase):
         self.assertAlmostEqual(drills['drill_13_64'].flute_length, 1.25)
         self.assertAlmostEqual(drills['drill_5_32'].diameter, 5 / 32)
         self.assertAlmostEqual(drills['drill_5_32'].flute_length, 2.0)
-        for d in drills.values():
-            self.assertEqual(d.spindle_speed, 7200)
-            self.assertAlmostEqual(d.plunge_rate, 45.0)
-            self.assertAlmostEqual(d.peck, 1 / 64)
+        for d in drills.values():   # from the shop's VCarve 1364.mmg
+            self.assertEqual(d.spindle_speed, 6900)
+            self.assertAlmostEqual(d.plunge_rate, 30.0)
+            self.assertAlmostEqual(d.peck, 1.2 * INCH_PER_MM)
+            self.assertAlmostEqual(d.peck_retract, 0.38 * INCH_PER_MM)
 
     def test_machine_and_setup(self):
         self.assertEqual((self.cfg.x_max, self.cfg.y_max, self.cfg.z_max), (24.0, 48.0, 2.0))
@@ -89,6 +90,21 @@ class ConfigTests(unittest.TestCase):
                                       'plunge_rate': 30, 'peck': '1/64'}
         cfg = roscam.load_config(data=data)
         self.assertEqual(roscam.match_drill(0.125, cfg).id, 'drill_1_8')
+
+    def test_material_tool_overrides(self):
+        with open(roscam.DEFAULT_CONFIG_PATH) as fh:
+            data = yaml.safe_load(fh)
+        data['materials']['polycarbonate']['tool_overrides'] = {
+            'endmill_1_4': {'spindle_speed': 20978, 'feed_rate': 32.7, 'stepdown': '1.651mm'}}
+        cfg = roscam.load_config(data=data)
+        poly = cfg.material('polycarbonate').tool(cfg.profile_tool)
+        self.assertEqual(poly.spindle_speed, 20978)
+        self.assertAlmostEqual(poly.stepdown, 0.065)
+        self.assertAlmostEqual(poly.plunge_rate, 10.0)  # not overridden
+        self.assertEqual(cfg.material('aluminum').tool(cfg.profile_tool).spindle_speed, 17820)
+        data['materials']['polycarbonate']['tool_overrides'] = {'endmill_1_4': {'diameter': 0.5}}
+        with self.assertRaises(ValueError):
+            roscam.load_config(data=data)
 
     def test_rejects_bad_config(self):
         with open(roscam.DEFAULT_CONFIG_PATH) as fh:
@@ -162,6 +178,27 @@ class GcodeHelperTests(unittest.TestCase):
         self.assertEqual(feeds, ['G1 Z-0.0200 F45', 'G1 Z-0.0400 F45', 'G1 Z-0.0500 F45'])
         self.assertEqual(moves[-1], 'G0 Z0.1000')
         self.assertIn('G0 Z-0.0100', moves)  # rapid back to just above the last peck
+
+    def test_chip_break_pecks_like_vcarve(self):
+        # 1364.mmg: G1 Z-1.206, G00 Z-0.825, G1 Z-2.413, ... (mm)
+        moves = roscam._peck_moves(-0.19, 0.1, 0.0475, 30, end_at_bottom=False, chip_break=0.015)
+        self.assertEqual(moves[:5], ['G0 Z0.1000', 'G1 Z-0.0475 F30', 'G0 Z-0.0325',
+                                     'G1 Z-0.0950 F30', 'G0 Z-0.0800'])
+        self.assertEqual(moves[-2:], ['G1 Z-0.1900 F30', 'G0 Z0.1000'])
+        self.assertNotIn('G0 Z0.1000', moves[1:-1])  # never pulls out mid-hole
+
+    def test_linearize_helices(self):
+        lines = ['G0 X1.0000 Y0.0000', 'G1 Z0.0000 F30',
+                 'G3 X1.0000 Y0.0000 I-1.0000 J0 Z-0.1000 F30  ; helix',
+                 'G3 X1.0000 Y0.0000 I-1.0000 J0 F144  ; flat circle']
+        out = roscam.linearize_helices(lines)
+        moves = [l for l in out if l.startswith('G1 X')]
+        self.assertEqual(len(moves), 36)
+        self.assertEqual(moves[-1], 'G1 X1.0000 Y0.0000 Z-0.1000')
+        self.assertIn('G1 X0.0000 Y1.0000 Z-0.0250', moves)  # quarter turn CCW, quarter depth
+        self.assertEqual(out[-1], lines[-1])  # flat arc kept as an arc
+        cw = roscam.linearize_helices(['G0 X1 Y0', 'G1 Z0 F30', 'G2 X1 Y0 I-1 J0 Z-0.1 F30'])
+        self.assertIn('G1 X0.0000 Y-1.0000 Z-0.0250', cw)
 
     def test_single_plunge_when_no_peck(self):
         moves = roscam._peck_moves(-0.3, 0.1, 0.0, 45)
@@ -257,8 +294,17 @@ class JobTests(unittest.TestCase):
         self.assertIn('PERIMETER WITH TABS', p.gcode)
         self.assertIn('mill 2 holes', p.feature_summary)
         self.assertIn('1 pocket', p.feature_summary)
-        # Tabs leave 0.06" above the stock bottom: Z = -0.25 + 0.06
-        self.assertIn('Z-0.1900', p.gcode)
+        # Tabs leave 0.05" above the stock bottom: Z = -0.25 + 0.05
+        self.assertIn('Z-0.2000', p.gcode)
+        # Ramps are straight moves: no arc changes Z (the converter warns on helices)
+        for line in p.gcode.splitlines():
+            code = line.split(';')[0]
+            if code.startswith(('G2 ', 'G3 ')):
+                self.assertNotIn('Z', code, line)
+        # Every comment fits the converter's 60-character comment limit
+        for line in p.gcode.splitlines()[:12]:
+            if line.startswith('('):
+                self.assertLessEqual(len(line) - 2, 60, line)
         # 1 mm step-downs: 0.289" total -> 8 passes
         self.assertIn('PASS 8/8', p.gcode)
         self.assertNotIn('PASS 9/', p.gcode)

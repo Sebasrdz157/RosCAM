@@ -52,6 +52,11 @@ holes:
 # tip_angle: drills only, used to add the tip length to the drill depth so the
 #            hole comes out full size all the way through.
 # peck: drills only, depth of each peck. 0 = drill in one plunge.
+# peck_retract: drills only, how far the drill lifts between pecks to break the
+#            chip. 0 = pull all the way out of the hole every peck.
+#
+# Drill numbers below are copied from the shop's VCarve file 1364.mmg:
+# 6900 RPM, 30 in/min (762 mm/min), 1.2 mm pecks with a 0.38 mm lift.
 tools:
   endmill_1_4:
     name: '1/4" flat end mill, 1 flute'
@@ -74,9 +79,10 @@ tools:
     overall_length: 2.29
     flutes: 2
     tip_angle: 118
-    spindle_speed: 7200
-    plunge_rate: 45.0
-    peck: 1/64
+    spindle_speed: 6900
+    plunge_rate: 30.0
+    peck: 1.2mm
+    peck_retract: 0.38mm
 
   drill_5_32:
     name: '5/32" drill, 118 deg, 2 flute'
@@ -86,9 +92,10 @@ tools:
     overall_length: 3.225
     flutes: 2
     tip_angle: 118
-    spindle_speed: 7200
-    plunge_rate: 45.0
-    peck: 1/64
+    spindle_speed: 6900
+    plunge_rate: 30.0
+    peck: 1.2mm
+    peck_retract: 0.38mm
 
 # The end mill used for profiles, pockets, and any holes that aren't drilled.
 profile_tool: endmill_1_4
@@ -101,9 +108,16 @@ profile_tool: endmill_1_4
 # out of 1/16" sheet (and vice versa).
 #
 # Tabs:
-#   width:   length of each tab along the outline
+#   width:   length of each tab along the outline (material left, not toolpath)
 #   height:  material LEFT under the tab, measured up from the bottom of the stock
 #   spacing: target distance between tabs along the outline (minimum 3 tabs)
+#
+# Starting values come from the shop's VCarve file out.mmg (1/8" sheet): tabs
+# about 0.5" of material long and 0.026" thick.
+#
+# Optional per-material speeds/feeds for any tool:
+#   tool_overrides:
+#     endmill_1_4: {spindle_speed: 18000, feed_rate: 100, plunge_rate: 8, stepdown: 0.03}
 materials:
   aluminum:
     name: "Aluminum"
@@ -111,18 +125,18 @@ materials:
     stepover: 0.25
     ramp_angle: 4.0
     thicknesses:
-      "1/16": {tab_width: 0.375, tab_height: 0.025, tab_spacing: 6.0}
-      "1/8":  {tab_width: 0.375, tab_height: 0.04,  tab_spacing: 6.0}
-      "1/4":  {tab_width: 0.375, tab_height: 0.06,  tab_spacing: 6.0}
+      "1/16": {tab_width: 0.5, tab_height: 0.02,  tab_spacing: 4.0}
+      "1/8":  {tab_width: 0.5, tab_height: 0.026, tab_spacing: 4.0}
+      "1/4":  {tab_width: 0.5, tab_height: 0.05,  tab_spacing: 4.0}
 
   polycarbonate:
     name: "Polycarbonate"
     stepover: 0.5
     ramp_angle: 10.0
     thicknesses:
-      "1/16": {tab_width: 0.375, tab_height: 0.025, tab_spacing: 5.0}
-      "1/8":  {tab_width: 0.375, tab_height: 0.04,  tab_spacing: 6.0}
-      "1/4":  {tab_width: 0.375, tab_height: 0.06,  tab_spacing: 6.0}
+      "1/16": {tab_width: 0.5, tab_height: 0.02,  tab_spacing: 4.0}
+      "1/8":  {tab_width: 0.5, tab_height: 0.026, tab_spacing: 4.0}
+      "1/4":  {tab_width: 0.5, tab_height: 0.05,  tab_spacing: 4.0}
 
 tabs:
   enabled: true

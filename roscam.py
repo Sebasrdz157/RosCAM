@@ -21,6 +21,7 @@ stock and Z0 on the top of the stock.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime
 import io
 import math
@@ -75,6 +76,7 @@ class Tool:
     stepdown: Optional[float] = None        # end mills: depth per pass
     tip_angle: Optional[float] = None       # drills
     peck: float = 0.0                       # drills: 0 = single plunge
+    peck_retract: float = 0.0               # drills: lift between pecks; 0 = all the way out
 
     @property
     def is_drill(self) -> bool:
@@ -111,6 +113,12 @@ class Material:
     stepover: float
     ramp_angle: float
     thicknesses: List[Thickness]
+    tool_overrides: Dict[str, dict] = field(default_factory=dict)
+
+    def tool(self, tool: Tool) -> Tool:
+        """The tool with this material's speeds/feeds applied (see tool_overrides)."""
+        over = self.tool_overrides.get(tool.id)
+        return dataclasses.replace(tool, **over) if over else tool
 
     def find_thickness(self, thickness) -> Thickness:
         """Look up a stocked thickness by label ('1/8') or value (0.125)."""
@@ -159,6 +167,10 @@ class ShopConfig:
                              f'Known: {", ".join(self.materials)}') from None
 
 
+OVERRIDABLE_LENGTHS = {'stepdown', 'peck', 'peck_retract'}
+OVERRIDABLE_NUMBERS = {'spindle_speed', 'feed_rate', 'plunge_rate', 'ramp_feed_rate'}
+
+
 def load_config(path: Optional[str] = None, data: Optional[dict] = None) -> ShopConfig:
     """Read roscam_config.yaml (or an already-parsed dict) into a ShopConfig."""
     if data is None:
@@ -190,6 +202,7 @@ def load_config(path: Optional[str] = None, data: Optional[dict] = None) -> Shop
             stepdown=parse_length(t.get('stepdown')),
             tip_angle=float(t['tip_angle']) if t.get('tip_angle') is not None else None,
             peck=parse_length(t.get('peck', 0)) or 0.0,
+            peck_retract=parse_length(t.get('peck_retract', 0)) or 0.0,
         )
         if ttype == 'endmill':
             missing = [k for k in ('feed_rate', 'ramp_feed_rate', 'stepdown') if getattr(tool, k) is None]
@@ -213,12 +226,26 @@ def load_config(path: Optional[str] = None, data: Optional[dict] = None) -> Shop
                 tab_spacing=_length(t['tab_spacing'], f'{mat_id} {label} tab_spacing'),
             ))
         thicknesses.sort(key=lambda t: t.value)
+        overrides = {}
+        for tool_id, over in (mat.get('tool_overrides') or {}).items():
+            if tool_id not in tools:
+                raise ValueError(f'Material {mat_id}: tool_overrides names unknown tool {tool_id!r}')
+            parsed = {}
+            for key, value in over.items():
+                if key in OVERRIDABLE_LENGTHS:
+                    parsed[key] = _length(value, f'{mat_id} {tool_id} {key}')
+                elif key in OVERRIDABLE_NUMBERS:
+                    parsed[key] = float(value) if key != 'spindle_speed' else int(value)
+                else:
+                    raise ValueError(f'Material {mat_id}: {tool_id}.{key} cannot be overridden')
+            overrides[tool_id] = parsed
         materials[mat_id] = Material(
             id=mat_id,
             name=mat.get('name', mat_id.title()),
             stepover=float(mat['stepover']),
             ramp_angle=float(mat['ramp_angle']),
             thicknesses=thicknesses,
+            tool_overrides=overrides,
         )
 
     tabs = data.get('tabs', {})
@@ -396,23 +423,29 @@ def expand_canned_cycles(lines: List[str], top: float) -> List[str]:
 
 
 def _peck_moves(bottom: float, r_plane: float, peck: float, feed: float,
-                top: float = 0.0, end_at_bottom: bool = True) -> List[str]:
+                top: float = 0.0, end_at_bottom: bool = True, chip_break: float = 0.0) -> List[str]:
     """Plain G0/G1 peck moves from r_plane down to bottom.
 
-    top is the Z of the stock surface; the first peck starts there. After each peck the
-    drill rapids out to r_plane to clear chips, then rapids back to just above the last
-    peck depth. peck <= 0 means one straight plunge.
+    top is the Z of the stock surface; the first peck starts there. peck <= 0 means one
+    straight plunge. Between pecks the drill either:
+      * chip_break > 0: lifts just that far and feeds straight on (what VCarve writes
+        for this shop's drills, e.g. 1.2 mm pecks with a 0.38 mm lift), or
+      * chip_break == 0: rapids all the way out to r_plane to clear chips, then rapids
+        back to just above the last peck (a classic G83).
     """
     moves = [f'G0 Z{r_plane:.4f}']
     deepest = top
     while deepest > bottom + EPS:
         target = bottom if peck <= EPS else max(deepest - peck, bottom)
-        if deepest < top - EPS:
+        if deepest < top - EPS and chip_break <= EPS:
             moves.append(f'G0 Z{deepest + PECK_REENTRY_GAP:.4f}')
         moves.append(f'G1 Z{target:.4f} F{feed:g}')
         deepest = target
         if deepest > bottom + EPS:
-            moves.append(f'G0 Z{r_plane:.4f}')
+            if chip_break > EPS:
+                moves.append(f'G0 Z{deepest + chip_break:.4f}')
+            else:
+                moves.append(f'G0 Z{r_plane:.4f}')
     if not end_at_bottom:
         moves.append(f'G0 Z{r_plane:.4f}')
     return moves
@@ -442,6 +475,58 @@ def shift_z(lines: List[str], dz: float) -> List[str]:
 
 
 _Z_RE = re.compile(r'Z\s*([-+]?(?:\d+\.?\d*|\.\d+))')
+
+
+def linearize_helices(lines: List[str], max_step_deg: float = 10.0) -> List[str]:
+    """Replace helical arcs (G2/G3 that also move Z) with short straight G1 moves.
+
+    The Richauto converter keeps helical arcs but warns that VCarve never writes
+    them, so ramps into holes and pockets are written as straight segments instead,
+    like VCarve's output. Flat arcs (no Z change) are left alone.
+    """
+    out = []
+    x = y = z = None
+    feed = None
+    motion = None
+    for line in lines:
+        code, comment = _split_comment(line)
+        up = code.upper()
+        gs = [int(g) for g in re.findall(r'G\s*(\d+)(?!\.)', up)]
+        for g in gs:
+            if g in (0, 1, 2, 3):
+                motion = g
+        w = _words(up)
+        if 'F' in w:
+            feed = w['F']
+        nz = w.get('Z', z)
+        is_helix = (motion in (2, 3) and ('I' in w or 'J' in w) and None not in (x, y, z)
+                    and nz is not None and abs(nz - z) > EPS)
+        if is_helix:
+            nx, ny = w.get('X', x), w.get('Y', y)
+            cx, cy = x + w.get('I', 0.0), y + w.get('J', 0.0)
+            r = math.hypot(x - cx, y - cy)
+            a0 = math.atan2(y - cy, x - cx)
+            a1 = math.atan2(ny - cy, nx - cx)
+            if motion == 3:   # counter-clockwise
+                sweep = (a1 - a0) % (2 * math.pi) or 2 * math.pi
+            else:
+                sweep = -((a0 - a1) % (2 * math.pi) or 2 * math.pi)
+            n = max(4, int(math.ceil(abs(math.degrees(sweep)) / max_step_deg)))
+            note = comment.strip()
+            out.append(f'(Ramp {"CCW" if motion == 3 else "CW"} to Z{nz:.4f} as {n} straight moves)'
+                       if not note else f'(Ramp to Z{nz:.4f}, {n} straight moves)')
+            for k in range(1, n + 1):
+                a = a0 + sweep * k / n
+                px, py = (nx, ny) if k == n else (cx + r * math.cos(a), cy + r * math.sin(a))
+                pz = z + (nz - z) * k / n
+                out.append(f'G1 X{px:.4f} Y{py:.4f} Z{pz:.4f}' + (f' F{feed:g}' if k == 1 and feed else ''))
+            x, y, z = nx, ny, nz
+            motion = 1
+            continue
+        out.append(line)
+        if 53 not in gs:
+            x, y, z = w.get('X', x), w.get('Y', y), nz
+    return out
 
 
 def plural(n: int, word: str) -> str:
@@ -591,7 +676,7 @@ class JobResult:
 
 def _team_config_for(cfg: ShopConfig, material: Material, thickness: Thickness) -> TeamConfig:
     """Express the RosCAM shop settings as a PenguinCAM TeamConfig for the end mill pass."""
-    em = cfg.profile_tool
+    em = material.tool(cfg.profile_tool)
     preset = {
         'name': material.name,
         'spindle_speed': em.spindle_speed,
@@ -632,18 +717,16 @@ def _program_header(cfg: ShopConfig, tool: Tool, part: str, material: Material, 
                     index: int, total: int, stock: Tuple[float, float], features: str,
                     timestamp: str) -> List[str]:
     lines = [
-        f'(RosCAM - {part})',
+        f'(RosCAM {part})',
         f'(Program {index} of {total}: {features})',
+        f'(Tool: {tool.name})',
+        f'(Spindle {tool.spindle_speed} RPM)',
+        f'(Material: {material.name} {thickness.label} in)',
+        f'(Stock at least {stock[0]:.2f} x {stock[1]:.2f} in)',
+        '(Zero X0 Y0 at lower-left corner of stock)',
+        '(Zero Z0 on TOP of stock)',
+        '(Re-zero Z after every bit change)',
         f'(Generated {timestamp})',
-        '',
-        f'(Machine: {cfg.machine_name})',
-        f'(Tool: {tool.name}, {tool.diameter:.4f}" diameter)',
-        f'(Spindle: {tool.spindle_speed} RPM)',
-        f'(Material: {material.name} {thickness.label}" thick, {thickness.value:.4f}")',
-        f'(Stock: at least {stock[0]:.2f}" x {stock[1]:.2f}")',
-        '(ZERO: X0 Y0 = lower-left corner of the stock, Z0 = TOP of the stock)',
-        f'(Through cuts go {cfg.overcut:.4f}" into the spoilboard)',
-        '(** Re-zero Z after every bit change **)',
         '',
         'G17  ; XY plane',
         'G94  ; Feed per minute',
@@ -656,7 +739,6 @@ def _program_header(cfg: ShopConfig, tool: Tool, part: str, material: Material, 
         '',
         f'G0 Z{cfg.safe_height:.4f}  ; Safe height',
         f'S{tool.spindle_speed} M3  ; Spindle on',
-        'G4 P2  ; Wait for spindle',
         '',
     ]
     return lines
@@ -675,12 +757,13 @@ def _program_footer(cfg: ShopConfig) -> List[str]:
 
 
 def _drill_body(tool: Tool, centers: List[Tuple[float, float]], bottom: float, cfg: ShopConfig) -> List[str]:
-    lines = [f'(===== DRILL {len(centers)} HOLES, {tool.diameter:.4f}" =====)',
-             f'(Depth Z{bottom:.4f}: thickness + {tool.tip_length:.4f}" tip + {cfg.overcut:.4f}" overcut)']
+    lines = [f'(Drill {len(centers)} holes to Z{bottom:.4f})',
+             f'(Depth = stock + {tool.tip_length:.4f} tip + {cfg.overcut:.4f} overcut)']
     for i, (cx, cy) in enumerate(centers, 1):
         lines.append(f'(Hole {i})')
         lines.append(f'G0 X{cx:.4f} Y{cy:.4f}')
-        lines.extend(_peck_moves(bottom, DRILL_RETRACT, tool.peck, tool.plunge_rate, end_at_bottom=False))
+        lines.extend(_peck_moves(bottom, DRILL_RETRACT, tool.peck, tool.plunge_rate, end_at_bottom=False,
+                                 chip_break=tool.peck_retract))
         lines.append(f'G0 Z{cfg.clearance_height:.4f}')
     return lines
 
@@ -709,7 +792,7 @@ def generate_job(dxf_path: str, material: str, thickness, cfg: Optional[ShopConf
         return result
     result.material, result.thickness_label, result.thickness = mat.name, thk.label, thk.value
 
-    endmill = cfg.profile_tool
+    endmill = mat.tool(cfg.profile_tool)
     pp = FRCPostProcessor(material_thickness=thk.value, tool_diameter=endmill.diameter,
                           units='inch', config=_team_config_for(cfg, mat, thk))
     pp.apply_material_preset(mat.id)
@@ -750,7 +833,7 @@ def generate_job(dxf_path: str, material: str, thickness, cfg: Optional[ShopConf
 
     # --- drill programs, smallest drill first ---
     planned = []  # (tool, body_lines, bottom, summary)
-    for drill in cfg.drills:
+    for drill in (mat.tool(d) for d in cfg.drills):
         centers = [c for g in groups if g.tool_id == drill.id for c in g.centers]
         if not centers:
             continue
@@ -766,6 +849,7 @@ def generate_job(dxf_path: str, material: str, thickness, cfg: Optional[ShopConf
         return result
     result.warnings.extend(em.warnings)
     body = shift_z(expand_canned_cycles(em.gcode.splitlines(), top=thk.value), -thk.value)
+    body = linearize_helices(body)
     bits = []
     if pp.holes:
         bits.append(f'mill {plural(len(pp.holes), "hole")}')
