@@ -26,6 +26,19 @@ controller.
 
 **Adding a bit:** copy an entry under `tools:` in `roscam_config.yaml` and change its numbers.
 
+## Web page
+
+`web/` is a static page that runs the same engine **in the browser** (via Pyodide), so DXFs
+never leave the user's computer and there is no server to pay for. It's published to GitHub
+Pages by `.github/workflows/pages.yml` on every push to `main` (enable it once under
+Settings -> Pages -> Source: GitHub Actions), and the PartsTracker CNC page shows it in its
+RosCAM tab.
+
+```bash
+uv run python web/build.py              # assemble dist/
+python -m http.server -d dist 8000      # open http://localhost:8000
+```
+
 RosCAM is built on [PenguinCAM](https://github.com/6238/PenguinCAM) by FRC Team 6238
 (MIT license), which does the DXF parsing, pocketing, tool compensation and tabs. The
 original PenguinCAM README follows.

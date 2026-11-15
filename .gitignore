@@ -45,3 +45,4 @@ test_output_*.nc
 # Python bytecode
 __pycache__/
 *.pyc
+dist/

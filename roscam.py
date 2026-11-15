@@ -921,6 +921,49 @@ def build_setup_sheet(result: JobResult, cfg: ShopConfig, timestamp: str) -> str
 
 
 # =============================================================================
+# Browser API (used by web/worker.js through Pyodide)
+# =============================================================================
+
+def web_options(cfg: Optional[ShopConfig] = None) -> dict:
+    """What the web page needs to build its menus."""
+    cfg = cfg or load_config()
+    return {
+        'materials': [{'id': m.id, 'name': m.name, 'thicknesses': [t.label for t in m.thicknesses]}
+                      for m in cfg.materials.values()],
+        'drills': [{'id': d.id, 'name': d.name, 'diameter': d.diameter} for d in cfg.drills],
+        'endmill': {'id': cfg.profile_tool.id, 'name': cfg.profile_tool.name,
+                    'diameter': cfg.profile_tool.diameter},
+        'machine': {'name': cfg.machine_name, 'x_max': cfg.x_max, 'y_max': cfg.y_max},
+    }
+
+
+def web_generate(dxf_bytes: bytes, filename: str, material: str, thickness: str,
+                 overrides: Optional[Dict[str, str]] = None, rotation: int = 0,
+                 cfg: Optional[ShopConfig] = None) -> dict:
+    """Run a job from an uploaded DXF and return everything the page shows, as JSON-able data."""
+    import base64
+    import tempfile
+    part = os.path.splitext(os.path.basename(filename or 'part.dxf'))[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'upload.dxf')
+        with open(path, 'wb') as fh:
+            fh.write(bytes(dxf_bytes))
+        try:
+            res = generate_job(path, material, thickness, cfg, overrides or {}, int(rotation), part_name=part)
+        except Exception as e:  # unreadable DXF etc: report it instead of crashing the page
+            return {'success': False, 'part_name': part, 'errors': [f'Could not process this DXF: {e}'],
+                    'warnings': [], 'hole_groups': [], 'programs': [], 'setup_sheet': ''}
+    out = res.to_dict()
+    for d, p in zip(out['programs'], res.programs):
+        d['gcode'] = p.gcode
+        d['tool_type'] = p.tool.type
+        d['tool_diameter'] = p.tool.diameter
+    out['zip_name'] = f'{res.part_name}_roscam.zip'
+    out['zip_base64'] = base64.b64encode(res.zip_bytes()).decode('ascii') if res.success else ''
+    return out
+
+
+# =============================================================================
 # CLI
 # =============================================================================
 

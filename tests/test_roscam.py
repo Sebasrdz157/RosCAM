@@ -366,5 +366,33 @@ class JobTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(out, 'plate_roscam.zip')))
 
 
+
+class WebApiTests(unittest.TestCase):
+    def test_options(self):
+        o = roscam.web_options()
+        self.assertEqual([m['id'] for m in o['materials']], ['aluminum', 'polycarbonate'])
+        self.assertEqual(o['materials'][0]['thicknesses'], ['1/16', '1/8', '1/4'])
+        self.assertEqual([d['id'] for d in o['drills']], ['drill_5_32', 'drill_13_64'])
+
+    def test_generate_from_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(build_plate(os.path.join(tmp, 'p.dxf')), 'rb') as fh:
+                data = fh.read()
+        out = roscam.web_generate(data, 'My Plate.dxf', 'aluminum', '1/4', {'0.5000': 'drill_13_64'})
+        self.assertTrue(out['success'], out['errors'])
+        self.assertEqual(out['part_name'], 'My Plate')
+        self.assertEqual(len(out['programs']), 3)
+        self.assertTrue(out['programs'][0]['gcode'].startswith('(RosCAM'))
+        self.assertEqual(out['zip_name'], 'My Plate_roscam.zip')
+        import base64
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(out['zip_base64']))) as zf:
+            self.assertEqual(len(zf.namelist()), 4)
+
+    def test_bad_dxf_reports_error(self):
+        out = roscam.web_generate(b'not a dxf', 'junk.dxf', 'aluminum', '1/4')
+        self.assertFalse(out['success'])
+        self.assertIn('Could not process', out['errors'][0])
+
+
 if __name__ == '__main__':
     unittest.main()
