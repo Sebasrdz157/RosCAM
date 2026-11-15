@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(ROOT, 'web')
 DIST = os.path.join(ROOT, 'dist')
 
-WEB_FILES = ['index.html', 'roscam.css', 'app.js', 'worker.js']
+WEB_FILES = ['index.html', 'roscam.css', 'app.js', 'worker.js', 'viewer.js']
 PY_FILES = ['roscam.py', 'frc_cam_postprocessor.py', 'team_config.py', 'gcode_hygiene.py',
             'dxf_geometry.py', 'roscam_config.yaml']
 

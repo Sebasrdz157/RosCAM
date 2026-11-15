@@ -73,6 +73,39 @@
         <p class="hint" id="stock-note"></p>
       </div>
 
+      <div id="sim-wrap" class="block hidden">
+        <h2>Simulation</h2>
+        <p class="hint">The path the router takes. Green is cut, gold is still to come. Drag to rotate,
+          scroll to zoom, middle-drag to pan.</p>
+        <div class="sim-bar">
+          <label class="field inline">
+            <span>Show</span>
+            <select id="sim-program"></select>
+          </label>
+          <button id="sim-play" class="btn" type="button">Play</button>
+          <button id="sim-restart" class="btn" type="button">Restart</button>
+          <label class="field inline">
+            <span>Speed</span>
+            <select id="sim-speed">
+              <option value="30">Slow</option>
+              <option value="150" selected>Normal</option>
+              <option value="600">Fast</option>
+              <option value="3000">Very fast</option>
+            </select>
+          </label>
+          <button id="sim-reset" class="btn" type="button">Reset view</button>
+        </div>
+        <div id="sim-stage" class="sim-stage">
+          <canvas id="sim-canvas" aria-label="3D toolpath simulation"></canvas>
+          <p id="sim-fallback" class="sim-fallback hidden"></p>
+        </div>
+        <input id="sim-scrubber" class="sim-scrubber" type="range" min="0" max="0" value="0" aria-label="Move">
+        <div class="sim-labels">
+          <span id="sim-label"></span>
+          <code id="sim-op"></code>
+        </div>
+      </div>
+
       <div id="programs-wrap" class="block hidden">
         <h2>Programs</h2>
         <ol id="programs" class="programs"></ol>
@@ -89,6 +122,9 @@
       </details>
     </section>
   </main>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="viewer.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
