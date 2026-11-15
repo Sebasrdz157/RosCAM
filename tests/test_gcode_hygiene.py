@@ -26,7 +26,7 @@ from gcode_hygiene import (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Modules that emit G-code. Anything added here gets its comment literals linted.
-GCODE_SOURCES = ['frc_cam_postprocessor.py', 'safe_test_mode.py', 'gcode_hygiene.py']
+GCODE_SOURCES = ['frc_cam_postprocessor.py', 'safe_test_mode.py', 'gcode_hygiene.py', 'roscam.py']
 
 
 def _looks_like_gcode_comment(text: str) -> bool:

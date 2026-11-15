@@ -2,6 +2,32 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## RosCAM (this fork)
+
+RosCAM is a fork of PenguinCAM for a shop with an Axiom router, a Richauto controller, and
+**no tool changer**. It writes **one program per tool** (drills first, then the 1/4" end mill
+for milled holes, pockets and the outline with tabs) plus a setup sheet.
+
+- `roscam.py` - the RosCAM job builder and CLI. Uses `FRCPostProcessor` for geometry,
+  pocketing and tabs; adds the tool library, hole-to-drill matching, per-tool programs,
+  stock-top Z zero, G83 expansion, and preflight checks.
+- `roscam_config.yaml` - machine, tool library, materials/thicknesses and tab sizes.
+- `tests/test_roscam.py` - RosCAM tests; `tests/fixtures/make_roscam_plate.py` builds the test plate.
+
+RosCAM conventions (differ from upstream PenguinCAM):
+- **Z0 is the TOP of the stock** (PenguinCAM's internal frame is Z0 at the spoilboard;
+  `roscam.shift_z` converts the end mill body). X0 Y0 is the lower-left corner of the stock,
+  with the part placed `setup.stock_margin` in from it.
+- Output is plain G0/G1/G2/G3 in inches: no canned cycles (G83 is expanded), no G53.
+  The team converts each `.nc` to `.mmg` with the PartsTracker `/cnc` page.
+
+```bash
+uv run python roscam.py part.dxf -m aluminum -t 1/4 -o out/
+```
+
+Keep changes to upstream files minimal so PenguinCAM fixes can still be merged from the
+`upstream` remote.
+
 ## Project Overview
 
 PenguinCAM is a web-based CAM post-processor that generates CNC G-code from DXF files exported from Onshape. Built for FRC Team 6238, it automates the CAD-to-CNC workflow for flat plates without requiring CAM software.
@@ -101,7 +127,8 @@ When generating G-code comments:
 
 ## Git Operations
 
-**DO NOT run any git commands** (git add, git commit, git push, etc.). The user prefers to handle all git operations themselves. Focus on making code changes and let the user manage version control.
+Work on a feature branch and open a pull request into `main`; don't push straight to `main`.
+(Upstream PenguinCAM's "no git commands" rule does not apply to RosCAM.)
 
 ## Architecture
 

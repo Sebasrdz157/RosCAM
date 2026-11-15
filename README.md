@@ -1,3 +1,37 @@
+# RosCAM
+
+One-click CAM for flat FRC plates on a router with **no tool changer**. Drop in a DXF of
+the plate, pick the material and thickness, and RosCAM writes one program per bit:
+
+```
+00_plate_SETUP.txt          which bit to load for each file, stock size, where to zero
+01_plate_drill_5-32.nc      peck-drill the 5/32" holes
+02_plate_drill_13-64.nc     peck-drill the 13/64" holes
+03_plate_endmill_1-4.nc     1/4" end mill: bigger holes, pockets, then the outline with tabs
+```
+
+Holes that match a drill in the tool library (`roscam_config.yaml`) are drilled. Bigger
+holes are milled with the end mill, and any hole size can be overridden. Every program
+zeros at X0 Y0 = lower-left corner of the stock, Z0 = top of the stock. Each one is
+checked against the work area and the bit's cutting length before it's written.
+
+```bash
+make install
+uv run python roscam.py plate.dxf -m aluminum -t 1/4 -o out/
+uv run python roscam.py plate.dxf -m polycarbonate -t 1/8 --hole 0.5=drill_13_64 --zip
+```
+
+Convert each `.nc` with the PartsTracker `/cnc` page before running it on the Richauto
+controller.
+
+**Adding a bit:** copy an entry under `tools:` in `roscam_config.yaml` and change its numbers.
+
+RosCAM is built on [PenguinCAM](https://github.com/6238/PenguinCAM) by FRC Team 6238
+(MIT license), which does the DXF parsing, pocketing, tool compensation and tabs. The
+original PenguinCAM README follows.
+
+---
+
 # PenguinCAM
 
 **Onshape-to-CNC for FRC Teams**
