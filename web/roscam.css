@@ -129,7 +129,22 @@ select:disabled { opacity: .5; }
   overflow-wrap: anywhere;
 }
 
+/* Simulation */
+.sim-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; }
+.field.inline { flex-direction: row; align-items: center; gap: 6px; }
+.field.inline select { width: auto; padding: 6px 8px; }
+#sim-program { max-width: 320px; }
+.sim-stage { position: relative; width: 100%; height: 460px; border: 1px solid var(--border);
+             border-radius: var(--radius); overflow: hidden; background: #0a0e14; }
+.sim-stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.sim-fallback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+                padding: 24px; text-align: center; color: var(--muted); }
+.sim-scrubber { width: 100%; accent-color: var(--accent); }
+.sim-labels { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--muted); min-height: 40px; }
+.sim-labels code { font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+
 @media (max-width: 640px) {
+  .sim-stage { height: 320px; }
   .page { padding: 20px 16px 48px; }
   .setup { grid-template-columns: 1fr; }
   .fields { flex-direction: row; flex-wrap: wrap; }

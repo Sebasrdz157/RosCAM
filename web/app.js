@@ -15,6 +15,9 @@ const els = {
   holesWrap: $('holes-wrap'), holes: $('holes'), previewWrap: $('preview-wrap'), legend: $('legend'),
   preview: $('preview'), stockNote: $('stock-note'), programsWrap: $('programs-wrap'),
   programs: $('programs'), zip: $('zip'), sheetWrap: $('sheet-wrap'), sheet: $('sheet'),
+  simWrap: $('sim-wrap'), simProgram: $('sim-program'), simPlay: $('sim-play'), simRestart: $('sim-restart'),
+  simSpeed: $('sim-speed'), simReset: $('sim-reset'), simStage: $('sim-stage'), simCanvas: $('sim-canvas'),
+  simFallback: $('sim-fallback'), simScrubber: $('sim-scrubber'), simLabel: $('sim-label'), simOp: $('sim-op'),
 };
 
 const state = { options: null, file: null, bytes: null, overrides: {}, result: null, running: 0 };
@@ -151,7 +154,7 @@ function showOnlyError(message) {
   setStatus('err', 'Could not make programs');
   fillList(els.errors, [message]);
   fillList(els.warnings, []);
-  for (const el of [els.holesWrap, els.previewWrap, els.programsWrap, els.sheetWrap]) el.classList.add('hidden');
+  for (const el of [els.holesWrap, els.previewWrap, els.programsWrap, els.sheetWrap, els.simWrap]) el.classList.add('hidden');
 }
 
 function fillList(ul, items) {
@@ -171,9 +174,11 @@ function render(res) {
   els.programsWrap.classList.toggle('hidden', !res.success);
   els.previewWrap.classList.toggle('hidden', !res.success);
   els.sheetWrap.classList.toggle('hidden', !res.success);
+  els.simWrap.classList.toggle('hidden', !res.success);
   if (res.success) {
     renderPrograms(res.programs);
     drawPreview(res);
+    renderSimulation(res);
     els.sheet.textContent = res.setup_sheet;
     const [sx, sy] = res.stock_size;
     els.stockNote.textContent = `Stock: at least ${sx.toFixed(2)}" x ${sy.toFixed(2)}". ` +
@@ -362,3 +367,56 @@ function escapeHtml(s) {
 }
 
 window.addEventListener('resize', () => { if (state.result && state.result.success) drawPreview(state.result); });
+
+// ---- 3D simulation (viewer.js, adapted from PenguinCAM) ---------------------------
+let viewer = null;
+
+function ensureViewer() {
+  if (viewer) return viewer;
+  const why = !window.THREE || !window.THREE.OrbitControls || !window.GcodeViewer
+    ? 'The 3D viewer could not load (it needs cdnjs.cloudflare.com and cdn.jsdelivr.net).'
+    : null;
+  if (why) return simUnavailable(why);
+  try {
+    viewer = new GcodeViewer({
+      canvas: els.simCanvas, container: els.simStage, scrubber: els.simScrubber,
+      scrubberLabel: els.simLabel, scrubberOp: els.simOp, playButton: els.simPlay,
+      restartButton: els.simRestart, speedSelect: els.simSpeed, resetButton: els.simReset,
+    });
+    viewer.speed = Number(els.simSpeed.value);
+  } catch (err) {
+    return simUnavailable('3D graphics (WebGL) are not available in this browser.');
+  }
+  return viewer;
+}
+
+function simUnavailable(message) {
+  els.simCanvas.classList.add('hidden');
+  els.simFallback.textContent = message;
+  els.simFallback.classList.remove('hidden');
+  return null;
+}
+
+function renderSimulation(res) {
+  const prev = els.simProgram.value;
+  const opts = [new Option('All programs, in order', 'all')];
+  res.programs.forEach((p, i) => opts.push(new Option(`${p.index}. ${p.tool_name}`, String(i))));
+  els.simProgram.replaceChildren(...opts);
+  if ([...els.simProgram.options].some((o) => o.value === prev)) els.simProgram.value = prev;
+  loadSimulation();
+}
+
+function loadSimulation() {
+  const res = state.result;
+  if (!res || !res.success || !ensureViewer()) return;
+  viewer._stop();
+  const choice = els.simProgram.value;
+  const progs = choice === 'all' ? res.programs : [res.programs[Number(choice)]];
+  const [sx, sy] = res.stock_size;
+  viewer.load(progs.map((p) => p.gcode).join('\n'), {
+    stockWidth: sx, stockDepth: sy, stockHeight: res.thickness, stockTop: 0,
+    toolDiameter: progs[progs.length - 1].tool_diameter,
+  });
+}
+
+els.simProgram.addEventListener('change', loadSimulation);
