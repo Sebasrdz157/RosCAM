@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RosCAM</title>
+  <meta name="description" content="Per-tool CNC programs for flat plates, generated in your browser.">
+  <link rel="stylesheet" href="roscam.css">
+</head>
+<body>
+  <main class="page">
+    <header class="head">
+      <h1>RosCAM</h1>
+      <p class="intro">
+        Drop a DXF of a flat plate's top face. RosCAM writes one program per bit: drills first, then the
+        1/4" end mill for bigger holes, pockets and the outline with tabs. Everything runs in your browser;
+        the DXF is never uploaded anywhere.
+      </p>
+      <div id="engine" class="engine" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="engine-text">Loading the CAM engine. The first visit takes about 15 seconds.</span>
+      </div>
+    </header>
+
+    <section class="setup">
+      <label id="drop" class="drop" tabindex="0">
+        <input id="file" type="file" accept=".dxf" hidden>
+        <span class="drop-title" id="drop-title">Drop a DXF here</span>
+        <span class="drop-sub" id="drop-sub">or click to choose one</span>
+      </label>
+
+      <div class="fields">
+        <label class="field">
+          <span>Material</span>
+          <select id="material" disabled></select>
+        </label>
+        <label class="field">
+          <span>Thickness</span>
+          <select id="thickness" disabled></select>
+        </label>
+        <label class="field">
+          <span>Rotate</span>
+          <select id="rotation" disabled>
+            <option value="0">0&deg;</option>
+            <option value="90">90&deg;</option>
+            <option value="180">180&deg;</option>
+            <option value="270">270&deg;</option>
+          </select>
+        </label>
+      </div>
+    </section>
+
+    <section id="result" class="result hidden" aria-live="polite">
+      <div id="status" class="status"></div>
+      <ul id="errors" class="messages errors"></ul>
+      <ul id="warnings" class="messages warnings"></ul>
+
+      <div id="holes-wrap" class="block hidden">
+        <h2>Holes</h2>
+        <p class="hint">RosCAM picks a tool for each hole size. Change one here and the programs update.</p>
+        <div class="table-scroll">
+          <table class="holes">
+            <thead><tr><th>Size</th><th>Count</th><th>Made with</th></tr></thead>
+            <tbody id="holes"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="preview-wrap" class="block hidden">
+        <h2>Preview</h2>
+        <div class="legend" id="legend"></div>
+        <canvas id="preview" role="img" aria-label="Toolpath preview"></canvas>
+        <p class="hint" id="stock-note"></p>
+      </div>
+
+      <div id="programs-wrap" class="block hidden">
+        <h2>Programs</h2>
+        <ol id="programs" class="programs"></ol>
+        <div class="actions">
+          <button id="zip" class="btn primary" type="button">Download all (.zip)</button>
+        </div>
+        <p class="hint">Convert each <code>.nc</code> file with the Converter before running it, and dry-run above the stock
+          if anything looks unfamiliar.</p>
+      </div>
+
+      <details id="sheet-wrap" class="block hidden">
+        <summary>Setup sheet</summary>
+        <pre id="sheet" class="sheet"></pre>
+      </details>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

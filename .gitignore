@@ -41,3 +41,8 @@ test_output_*.nc
 
 # ...but never ignore test fixtures/goldens under tests/
 !tests/**
+
+# Python bytecode
+__pycache__/
+*.pyc
+dist/

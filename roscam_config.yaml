@@ -1,0 +1,145 @@
+# =============================================================================
+# RosCAM shop configuration
+# =============================================================================
+# One file for everything shop-specific: the machine, the tool library, and the
+# per-material / per-thickness defaults. Lengths are in INCHES unless a unit is
+# written ("1mm", "13/64", '0.25"'). Feeds are in inches per minute (IPM).
+#
+# To add a new bit: copy one of the entries under `tools:`, give it a new id,
+# and fill in its numbers. Drills are picked automatically for holes whose
+# diameter is within `holes.drill_match_tolerance` of the drill's diameter.
+# =============================================================================
+
+machine:
+  name: "Axiom CNC router"
+  controller: "Richauto DSP, .mmg via the PartsTracker /cnc converter"
+  # Work area. X is the 2' axis, Y is the 4' axis.
+  x_max: 24.0
+  y_max: 48.0
+  # Tallest stock we ever put under the spindle.
+  z_max: 2.0
+  # No automatic tool changer: every tool gets its own program file and the
+  # operator swaps the bit and re-zeros Z between files.
+  tool_changer: false
+
+setup:
+  # Where the operator zeros the machine. RosCAM writes every program with
+  # X0 Y0 at the LOWER-LEFT corner of the stock and Z0 on the TOP of the stock.
+  z_zero: stock_top
+  # Gap between the stock edge and the part outline. The cutter's centre runs
+  # half a tool diameter outside the part, so this must be bigger than the tool
+  # radius (0.125" for the 1/4" end mill) or the cutter leaves the stock.
+  stock_margin: 0.5
+  # How far every through-cut goes past the bottom of the stock into the
+  # spoilboard.
+  spoilboard_overcut: 1mm
+  # Height above the top of the stock for rapid moves between features.
+  clearance_height: 0.2
+  # Height above the top of the stock for rapid moves at program start/end.
+  safe_height: 0.5
+
+holes:
+  # A hole is drilled when its diameter is within this of a drill's diameter.
+  drill_match_tolerance: 0.006
+  # Holes that match no drill are milled with the profile end mill, as long as
+  # they're bigger than it.
+
+# -----------------------------------------------------------------------------
+# Tool library
+# -----------------------------------------------------------------------------
+# type: endmill or drill
+# diameter, flute_length, overall_length: inches (units allowed)
+# tip_angle: drills only, used to add the tip length to the drill depth so the
+#            hole comes out full size all the way through.
+# peck: drills only, depth of each peck. 0 = drill in one plunge.
+# peck_retract: drills only, how far the drill lifts between pecks to break the
+#            chip. 0 = pull all the way out of the hole every peck.
+#
+# Drill numbers below are copied from the shop's VCarve file 1364.mmg:
+# 6900 RPM, 30 in/min (762 mm/min), 1.2 mm pecks with a 0.38 mm lift.
+tools:
+  endmill_1_4:
+    name: '1/4" flat end mill, 1 flute'
+    type: endmill
+    diameter: 0.25
+    flute_length: 0.75
+    overall_length: 2.0
+    flutes: 1
+    spindle_speed: 17820
+    feed_rate: 144.0          # side cutting
+    plunge_rate: 10.0         # straight Z moves (tab steps)
+    ramp_feed_rate: 30.0      # ramping/helical entries into the cut
+    stepdown: 1mm             # depth per pass
+
+  drill_13_64:
+    name: '13/64" drill, 118 deg, 2 flute'
+    type: drill
+    diameter: 13/64
+    flute_length: 1.25
+    overall_length: 2.29
+    flutes: 2
+    tip_angle: 118
+    spindle_speed: 6900
+    plunge_rate: 30.0
+    peck: 1.2mm
+    peck_retract: 0.38mm
+
+  drill_5_32:
+    name: '5/32" drill, 118 deg, 2 flute'
+    type: drill
+    diameter: 5/32
+    flute_length: 2.0
+    overall_length: 3.225
+    flutes: 2
+    tip_angle: 118
+    spindle_speed: 6900
+    plunge_rate: 30.0
+    peck: 1.2mm
+    peck_retract: 0.38mm
+
+# The end mill used for profiles, pockets, and any holes that aren't drilled.
+profile_tool: endmill_1_4
+
+# -----------------------------------------------------------------------------
+# Materials
+# -----------------------------------------------------------------------------
+# Each material lists the thicknesses we stock. Tab settings are per
+# thickness because a tab that holds 1/4" plate would be impossible to snap
+# out of 1/16" sheet (and vice versa).
+#
+# Tabs:
+#   width:   length of each tab along the outline (material left, not toolpath)
+#   height:  material LEFT under the tab, measured up from the bottom of the stock
+#   spacing: target distance between tabs along the outline (minimum 3 tabs)
+#
+# Starting values come from the shop's VCarve file out.mmg (1/8" sheet): tabs
+# about 0.5" of material long and 0.026" thick.
+#
+# Optional per-material speeds/feeds for any tool:
+#   tool_overrides:
+#     endmill_1_4: {spindle_speed: 18000, feed_rate: 100, plunge_rate: 8, stepdown: 0.03}
+materials:
+  aluminum:
+    name: "Aluminum"
+    # Pocket clearing stepover as a fraction of the tool diameter.
+    stepover: 0.25
+    ramp_angle: 4.0
+    thicknesses:
+      "1/16": {tab_width: 0.5, tab_height: 0.02,  tab_spacing: 4.0}
+      "1/8":  {tab_width: 0.5, tab_height: 0.026, tab_spacing: 4.0}
+      "1/4":  {tab_width: 0.5, tab_height: 0.05,  tab_spacing: 4.0}
+
+  polycarbonate:
+    name: "Polycarbonate"
+    stepover: 0.5
+    ramp_angle: 10.0
+    thicknesses:
+      "1/16": {tab_width: 0.5, tab_height: 0.02,  tab_spacing: 4.0}
+      "1/8":  {tab_width: 0.5, tab_height: 0.026, tab_spacing: 4.0}
+      "1/4":  {tab_width: 0.5, tab_height: 0.05,  tab_spacing: 4.0}
+
+tabs:
+  enabled: true
+  # Leave tabs in place; the operator snaps/cuts parts free after the sheet is
+  # done. (Milling tabs off at the end would let the part move.)
+  remove_tabs: false
