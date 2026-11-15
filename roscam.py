@@ -33,6 +33,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import yaml
+from shapely import affinity
+from shapely.geometry import Point, Polygon, box
+from shapely.ops import unary_union
+from shapely.prepared import prep
 
 from frc_cam_postprocessor import FRCPostProcessor, sanitize_filename_base
 from gcode_hygiene import finalize_gcode
@@ -552,8 +556,7 @@ class MotionStats:
 def analyze_motion(gcode: str) -> MotionStats:
     """Track the tool through a program: extents, and dangerous moves below the stock top."""
     st = MotionStats()
-    x = y = 0.0
-    z = None
+    x = y = z = None   # unknown until the program sets them
     motion = None
     for raw in gcode.splitlines():
         code, _ = _split_comment(raw)
@@ -570,7 +573,13 @@ def analyze_motion(gcode: str) -> MotionStats:
         if not any(k in w for k in 'XYZ'):
             continue
         nx, ny, nz = w.get('X', x), w.get('Y', y), w.get('Z', z)
-        xy_move = abs(nx - x) > EPS or abs(ny - y) > EPS
+        if nx is None or ny is None:
+            # XY still unknown (e.g. the opening Z-only retract): only Z is tracked.
+            if nz is not None:
+                st.z_min, st.z_max = min(st.z_min, nz), max(st.z_max, nz)
+            x, y, z = nx, ny, nz
+            continue
+        xy_move = x is None or y is None or abs(nx - x) > EPS or abs(ny - y) > EPS
         below = z is not None and nz is not None and max(z, nz) < -EPS
         if xy_move and below:
             if motion == 0:
@@ -654,9 +663,17 @@ class JobResult:
     setup_sheet: str = ''
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    sheet_id: Optional[str] = None
+    placement: Optional[Tuple[float, float]] = None       # part's lower-left corner on the sheet
+    footprint: List[Tuple[float, float]] = field(default_factory=list)   # space the job needs
+    cut_region: List[Tuple[float, float]] = field(default_factory=list)  # what to mark as used after cutting
 
     def to_dict(self) -> dict:
         return {
+            'sheet_id': self.sheet_id,
+            'placement': list(self.placement) if self.placement else None,
+            'footprint': [list(p) for p in self.footprint],
+            'cut_region': [list(p) for p in self.cut_region],
             'success': self.success, 'part_name': self.part_name, 'material': self.material,
             'thickness': self.thickness, 'thickness_label': self.thickness_label,
             'stock_size': [round(v, 3) for v in self.stock_size],
@@ -715,15 +732,16 @@ def _team_config_for(cfg: ShopConfig, material: Material, thickness: Thickness) 
 
 def _program_header(cfg: ShopConfig, tool: Tool, part: str, material: Material, thickness: Thickness,
                     index: int, total: int, stock: Tuple[float, float], features: str,
-                    timestamp: str) -> List[str]:
+                    timestamp: str, sheet_id: Optional[str] = None) -> List[str]:
     lines = [
         f'(RosCAM {part})',
         f'(Program {index} of {total}: {features})',
         f'(Tool: {tool.name})',
         f'(Spindle {tool.spindle_speed} RPM)',
         f'(Material: {material.name} {thickness.label} in)',
-        f'(Stock at least {stock[0]:.2f} x {stock[1]:.2f} in)',
-        '(Zero X0 Y0 at lower-left corner of stock)',
+        (f'(Sheet {re.sub(r"[^A-Za-z0-9 _.#-]", "-", sheet_id)[:30]}, {stock[0]:g} x {stock[1]:g} in)' if sheet_id
+         else f'(Stock at least {stock[0]:.2f} x {stock[1]:.2f} in)'),
+        '(Zero X0 Y0 at lower-left corner of ' + ('sheet)' if sheet_id else 'stock)'),
         '(Zero Z0 on TOP of stock)',
         '(Re-zero Z after every bit change)',
         f'(Generated {timestamp})',
@@ -775,10 +793,109 @@ def _route(pp: FRCPostProcessor, centers: List[Tuple[float, float]]) -> List[Tup
     return [tuple(i['center']) for i in items]
 
 
+# =============================================================================
+# Sheets: placing a part on a partly used sheet
+# =============================================================================
+
+# Gap kept between the cutter's edge and anything off limits (used areas, sheet edges).
+SHEET_CLEARANCE = 0.125
+# Grid the automatic placement searches on.
+PLACEMENT_STEP = 0.25
+
+
+@dataclass
+class Sheet:
+    """A sheet of stock: its size and the areas already used up (polygons, inches,
+    measured from the sheet's lower-left corner)."""
+    id: str
+    width: float
+    height: float
+    regions: List[List[Tuple[float, float]]] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'Sheet':
+        return cls(id=str(d['id']), width=float(d['width']), height=float(d['height']),
+                   regions=[[(float(x), float(y)) for x, y in poly] for poly in d.get('regions') or []])
+
+
+def _part_outline(pp: FRCPostProcessor):
+    """The part's outer boundary as a polygon (largest closed shape: polyline or circle)."""
+    best = None
+    for poly in pp.polylines:
+        if len(poly) >= 3:
+            shape = Polygon(poly)
+            if not shape.is_valid:
+                shape = shape.buffer(0)
+            if best is None or shape.area > best.area:
+                best = shape
+    for c in pp.circles:
+        shape = Point(c['center']).buffer(c['diameter'] / 2, 64)
+        if best is None or shape.area > best.area:
+            best = shape
+    return best
+
+
+def _coords(shape, tolerance: float = 0.005) -> List[Tuple[float, float]]:
+    shape = shape.simplify(tolerance, preserve_topology=True)
+    if shape.geom_type == 'MultiPolygon':
+        shape = max(shape.geoms, key=lambda g: g.area)
+    return [(round(x, 4), round(y, 4)) for x, y in shape.exterior.coords[:-1]]
+
+
+def place_on_sheet(footprint, sheet: Sheet, cfg: ShopConfig,
+                   placement: Optional[Tuple[float, float]] = None) -> Tuple[Optional[Tuple[float, float]], Optional[str]]:
+    """Find where the part goes on the sheet.
+
+    footprint is the space the job needs with the part's bounding box at (0, 0). Returns
+    ((dx, dy), None) to move the part there, or (None, reason). With placement given,
+    only that spot is checked; otherwise the lowest, then left-most, free spot is used.
+    """
+    usable = box(0, 0, min(sheet.width, cfg.x_max), min(sheet.height, cfg.y_max))
+    blocked = unary_union([Polygon(r).buffer(0) for r in sheet.regions if len(r) >= 3]) if sheet.regions else None
+    fminx, fminy, fmaxx, fmaxy = footprint.bounds
+
+    def fits(dx, dy):
+        moved = affinity.translate(footprint, dx, dy)
+        if not usable_p.contains(moved):
+            return False
+        return blocked is None or moved.intersection(blocked).area < 1e-6
+
+    usable_p = prep(usable)
+    if placement is not None:
+        dx, dy = float(placement[0]), float(placement[1])
+        moved = affinity.translate(footprint, dx, dy)
+        if not usable.contains(moved):
+            return None, (f'The part does not fit on sheet {sheet.id} there: it needs '
+                          f'{SHEET_CLEARANCE:g}" of clearance from the sheet edge.')
+        if blocked is not None and moved.intersection(blocked).area >= 1e-6:
+            return None, f'That spot overlaps an area of sheet {sheet.id} that is already used.'
+        return (dx, dy), None
+
+    ux0, uy0, ux1, uy1 = usable.bounds
+    y = uy0 - fminy
+    while y + fmaxy <= uy1 + 1e-9:
+        x = ux0 - fminx
+        while x + fmaxx <= ux1 + 1e-9:
+            if fits(x, y):
+                return (round(x, 4), round(y, 4)), None
+            x += PLACEMENT_STEP
+        y += PLACEMENT_STEP
+    return None, (f'No free space on sheet {sheet.id} for this part '
+                  f'({fmaxx - fminx:.2f}" x {fmaxy - fminy:.2f}" including cutter clearance). '
+                  f'Try rotating it or pick another sheet.')
+
+
 def generate_job(dxf_path: str, material: str, thickness, cfg: Optional[ShopConfig] = None,
                  overrides: Optional[Dict[str, str]] = None, rotation: int = 0,
-                 part_name: Optional[str] = None, timestamp: Optional[str] = None) -> JobResult:
-    """Turn one flat-part DXF into per-tool programs plus a setup sheet."""
+                 part_name: Optional[str] = None, timestamp: Optional[str] = None,
+                 sheet: Optional[Sheet] = None,
+                 placement: Optional[Tuple[float, float]] = None) -> JobResult:
+    """Turn one flat-part DXF into per-tool programs plus a setup sheet.
+
+    With a sheet, the part is placed on that sheet clear of its used areas (at
+    `placement` if given: the part's lower-left corner in sheet coordinates) and the
+    programs are zeroed on the sheet's lower-left corner.
+    """
     cfg = cfg or load_config()
     part = sanitize_filename_base(part_name or os.path.splitext(os.path.basename(dxf_path))[0], 'part')
     timestamp = timestamp or datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -802,14 +919,35 @@ def generate_job(dxf_path: str, material: str, thickness, cfg: Optional[ShopConf
         result.errors.append('This DXF has depth layers (2.5D). RosCAM only handles flat, through-cut plates.')
         return result
 
-    margin = cfg.stock_margin
-    pp.transform_coordinates('bottom-left', rotation, placement_offset=(margin, margin))
-    bbox = pp.bounding_box()
-    if bbox:
-        result.stock_size = (bbox[2] + margin, bbox[3] + margin)
-        if result.stock_size[0] > cfg.x_max or result.stock_size[1] > cfg.y_max:
-            result.errors.append(f'Part plus margin is {result.stock_size[0]:.2f}" x {result.stock_size[1]:.2f}", '
-                                 f'bigger than the {cfg.x_max:g}" x {cfg.y_max:g}" work area. Try rotating it 90 deg.')
+    if sheet is None:
+        margin = cfg.stock_margin
+        pp.transform_coordinates('bottom-left', rotation, placement_offset=(margin, margin))
+        bbox = pp.bounding_box()
+        if bbox:
+            result.stock_size = (bbox[2] + margin, bbox[3] + margin)
+            if result.stock_size[0] > cfg.x_max or result.stock_size[1] > cfg.y_max:
+                result.errors.append(f'Part plus margin is {result.stock_size[0]:.2f}" x {result.stock_size[1]:.2f}", '
+                                     f'bigger than the {cfg.x_max:g}" x {cfg.y_max:g}" work area. Try rotating it 90 deg.')
+    else:
+        # Normalize the part to (0, 0), find room on the sheet, then move it there.
+        pp.transform_coordinates('bottom-left', rotation, placement_offset=(0.0, 0.0), enforce_bounds=False)
+        outline = _part_outline(pp)
+        if outline is None:
+            result.errors.append('Could not find the outline of this part.')
+            return result
+        footprint = outline.buffer(endmill.diameter / 2 + SHEET_CLEARANCE)
+        offset, why = place_on_sheet(footprint, sheet, cfg, placement)
+        result.sheet_id = sheet.id
+        result.stock_size = (sheet.width, sheet.height)
+        if offset is None:
+            result.errors.append(why)
+            result.footprint = _coords(affinity.translate(footprint, *(placement or (0, 0))))
+            result.placement = tuple(placement) if placement else None
+            return result
+        pp.transform_coordinates('bottom-left', 0, placement_offset=offset, enforce_bounds=False)
+        result.placement = offset
+        result.footprint = _coords(affinity.translate(footprint, *offset))
+        result.cut_region = _coords(affinity.translate(outline.buffer(endmill.diameter / 2), *offset))
 
     # The outer boundary may itself be a circle (a round part); it isn't a hole.
     all_circles = list(pp.circles)
@@ -861,7 +999,8 @@ def generate_job(dxf_path: str, material: str, thickness, cfg: Optional[ShopConf
 
     total = len(planned)
     for i, (tool, body, bottom, summary) in enumerate(planned, 1):
-        lines = (_program_header(cfg, tool, part, mat, thk, i, total, result.stock_size, summary, timestamp)
+        lines = (_program_header(cfg, tool, part, mat, thk, i, total, result.stock_size, summary, timestamp,
+                                 result.sheet_id)
                  + body + _program_footer(cfg))
         gcode = finalize_gcode(lines)
         p_err, p_warn = preflight(gcode, tool, bottom, cfg)
@@ -896,8 +1035,20 @@ def build_setup_sheet(result: JobResult, cfg: ShopConfig, timestamp: str) -> str
         f'Generated {timestamp}',
         '',
         f'Material: {result.material}, {result.thickness_label}" ({result.thickness:.4f}")',
-        f'Stock:    at least {sx:.2f}" (X) x {sy:.2f}" (Y)',
-        f'Zero:     X0 Y0 at the LOWER-LEFT corner of the stock, Z0 on TOP of the stock',
+    ]
+    if result.sheet_id:
+        px, py = result.placement
+        lines += [
+            f'Sheet:    {result.sheet_id} ({sx:g}" x {sy:g}")',
+            f'Part:     lower-left corner at X {px:.3f}" Y {py:.3f}" on the sheet',
+            f'Zero:     X0 Y0 at the LOWER-LEFT corner of the SHEET, Z0 on TOP of the sheet',
+        ]
+    else:
+        lines += [
+            f'Stock:    at least {sx:.2f}" (X) x {sy:.2f}" (Y)',
+            f'Zero:     X0 Y0 at the LOWER-LEFT corner of the stock, Z0 on TOP of the stock',
+        ]
+    lines += [
         '',
         'Holes:',
     ]
@@ -939,7 +1090,8 @@ def web_options(cfg: Optional[ShopConfig] = None) -> dict:
 
 def web_generate(dxf_bytes: bytes, filename: str, material: str, thickness: str,
                  overrides: Optional[Dict[str, str]] = None, rotation: int = 0,
-                 cfg: Optional[ShopConfig] = None) -> dict:
+                 cfg: Optional[ShopConfig] = None, sheet: Optional[dict] = None,
+                 placement=None) -> dict:
     """Run a job from an uploaded DXF and return everything the page shows, as JSON-able data."""
     import base64
     import tempfile
@@ -949,7 +1101,9 @@ def web_generate(dxf_bytes: bytes, filename: str, material: str, thickness: str,
         with open(path, 'wb') as fh:
             fh.write(bytes(dxf_bytes))
         try:
-            res = generate_job(path, material, thickness, cfg, overrides or {}, int(rotation), part_name=part)
+            res = generate_job(path, material, thickness, cfg, overrides or {}, int(rotation), part_name=part,
+                               sheet=Sheet.from_dict(sheet) if sheet else None,
+                               placement=tuple(placement) if placement else None)
         except Exception as e:  # unreadable DXF etc: report it instead of crashing the page
             return {'success': False, 'part_name': part, 'errors': [f'Could not process this DXF: {e}'],
                     'warnings': [], 'hole_groups': [], 'programs': [], 'setup_sheet': ''}

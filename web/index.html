@@ -20,8 +20,13 @@
         <span class="spinner" aria-hidden="true"></span>
         <span id="engine-text">Loading the CAM engine. The first visit takes about 15 seconds.</span>
       </div>
+      <nav class="views" aria-label="RosCAM screens">
+        <button type="button" class="view-tab" data-view="programs" aria-pressed="true">Make programs</button>
+        <button type="button" class="view-tab" data-view="sheets" aria-pressed="false">Sheets</button>
+      </nav>
     </header>
 
+    <div id="view-programs" class="view">
     <section class="setup">
       <label id="drop" class="drop" tabindex="0">
         <input id="file" type="file" accept=".dxf" hidden>
@@ -37,6 +42,12 @@
         <label class="field">
           <span>Thickness</span>
           <select id="thickness" disabled></select>
+        </label>
+        <label class="field">
+          <span>Stock</span>
+          <select id="stock" disabled>
+            <option value="">Loose piece</option>
+          </select>
         </label>
         <label class="field">
           <span>Rotate</span>
@@ -71,6 +82,10 @@
         <div class="legend" id="legend"></div>
         <canvas id="preview" role="img" aria-label="Toolpath preview"></canvas>
         <p class="hint" id="stock-note"></p>
+        <div id="cut-actions" class="actions hidden">
+          <button id="mark-cut" class="btn needs-editor" type="button">Mark as cut on sheet</button>
+          <span id="cut-msg" class="hint"></span>
+        </div>
       </div>
 
       <div id="sim-wrap" class="block hidden">
@@ -121,10 +136,92 @@
         <pre id="sheet" class="sheet"></pre>
       </details>
     </section>
+    </div>
+
+    <div id="view-sheets" class="view hidden">
+      <section class="block card">
+        <div class="account">
+          <form id="signin-form" class="signin">
+            <span class="hint">Anyone can look. Sign in with the team account to add or change sheets.</span>
+            <input id="signin-email" type="email" autocomplete="username" placeholder="Email" aria-label="Email" required>
+            <input id="signin-password" type="password" autocomplete="current-password" placeholder="Password"
+                   aria-label="Password" required>
+            <button class="btn primary" type="submit">Sign in</button>
+          </form>
+          <div id="signed-in" class="signed-in hidden">
+            <span>Signed in as <strong id="signed-in-who"></strong></span>
+            <button id="signout" class="btn small" type="button">Sign out</button>
+          </div>
+        </div>
+        <p id="sheets-msg" class="sheets-msg" aria-live="polite"></p>
+      </section>
+
+      <div class="sheets-layout">
+        <section class="block">
+          <div class="sheet-filters">
+            <select id="f-material" aria-label="Material"><option value="">Any material</option></select>
+            <select id="f-thickness" aria-label="Thickness"></select>
+            <label class="check"><input id="f-used" type="checkbox"> Show used up</label>
+            <span id="sheet-count" class="hint"></span>
+          </div>
+          <div id="sheet-list" class="sheet-list"></div>
+          <p id="sheet-empty" class="hint hidden">No sheets match. Add one below.</p>
+
+          <details class="block card add-sheet">
+            <summary>Add a sheet</summary>
+            <form id="add-sheet" class="form-grid">
+              <label class="field"><span>ID on the sheet</span><input id="a-id" maxlength="40" placeholder="AL-014" required></label>
+              <label class="field"><span>Material</span><select id="a-material"></select></label>
+              <label class="field"><span>Thickness</span><select id="a-thickness"></select></label>
+              <label class="field"><span>Width (X), in</span><input id="a-width" type="number" step="0.01" min="1" value="24"></label>
+              <label class="field"><span>Height (Y), in</span><input id="a-height" type="number" step="0.01" min="1" value="48"></label>
+              <label class="field wide"><span>Notes</span><input id="a-notes" maxlength="200" placeholder="Where it's stored, scratches..."></label>
+              <button class="btn primary needs-editor" type="submit">Add sheet</button>
+            </form>
+          </details>
+        </section>
+
+        <section id="sheet-editor" class="block card hidden">
+          <h2 id="ed-title"></h2>
+          <p id="ed-meta" class="hint"></p>
+          <p class="hint">Grey areas are off limits (measured by hand); red areas are parts RosCAM recorded as cut.
+            Measure from the sheet's lower-left corner. Drag on the drawing to fill in a rectangle.</p>
+          <div class="ed-canvas-wrap"><canvas id="ed-canvas" aria-label="Sheet drawing"></canvas></div>
+
+          <form id="add-region" class="form-grid">
+            <label class="field"><span>X, in</span><input id="r-x" type="number" step="0.01" required></label>
+            <label class="field"><span>Y, in</span><input id="r-y" type="number" step="0.01" required></label>
+            <label class="field"><span>Width, in</span><input id="r-w" type="number" step="0.01" min="0" required></label>
+            <label class="field"><span>Height, in</span><input id="r-h" type="number" step="0.01" min="0" required></label>
+            <label class="field wide"><span>Label (optional)</span><input id="r-label" maxlength="60" placeholder="Old cut, crack..."></label>
+            <button class="btn primary needs-editor" type="submit">Mark area as used</button>
+          </form>
+
+          <h3>Used areas</h3>
+          <ul id="region-list" class="region-list"></ul>
+          <p id="no-regions" class="hint">None yet: the whole sheet is free.</p>
+
+          <div class="ed-footer">
+            <label class="field inline"><span>Status</span>
+              <select id="ed-status" class="needs-editor">
+                <option value="active">Active</option>
+                <option value="used_up">Used up</option>
+              </select>
+            </label>
+            <label class="field wide"><span>Notes</span><input id="ed-notes" maxlength="200"></label>
+            <button id="ed-save-notes" class="btn small needs-editor" type="button">Save notes</button>
+            <button id="ed-delete" class="btn small danger needs-editor" type="button">Delete sheet</button>
+          </div>
+        </section>
+      </div>
+    </div>
   </main>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script src="viewer.js"></script>
+  <script src="config.js"></script>
+  <script src="db.js"></script>
+  <script src="sheets.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
