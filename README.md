@@ -39,6 +39,22 @@ uv run python web/build.py              # assemble dist/
 python -m http.server -d dist 8000      # open http://localhost:8000
 ```
 
+## Sheet inventory (Supabase)
+
+The **Sheets** screen keeps track of every sheet of stock by the ID written on it, and the
+areas already used (measured by hand, or recorded automatically with **Mark as cut**). On
+**Make programs**, pick a sheet as the stock and RosCAM places the part clear of the used
+areas (drag it to move it) and zeros the programs on the sheet's lower-left corner.
+
+Data lives in Supabase (`web/config.js` has the project URL and publishable key). One-time setup:
+
+1. Supabase dashboard -> **SQL Editor** -> paste `supabase/schema.sql` -> **Run**.
+2. **Authentication -> Users -> Add user -> Create new user**: email `roscam@frc5572.org`
+   (or change it in both `web/config.js` and the last line of the SQL), a team password,
+   **Auto Confirm User** ticked.
+
+Anyone can view the inventory; only emails in the `editors` table can change it.
+
 RosCAM is built on [PenguinCAM](https://github.com/6238/PenguinCAM) by FRC Team 6238
 (MIT license), which does the DXF parsing, pocketing, tool compensation and tabs. The
 original PenguinCAM README follows.

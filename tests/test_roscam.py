@@ -11,6 +11,7 @@ import zipfile
 
 import ezdxf
 import yaml
+from shapely.geometry import Polygon
 
 import roscam
 from tests.fixtures.make_roscam_plate import build as build_plate
@@ -31,6 +32,11 @@ def _dxf(tmpdir, holes, size=(4.0, 3.0), name='p.dxf', extra=None):
     path = os.path.join(tmpdir, name)
     doc.saveas(path)
     return path
+
+
+def _cutting_stats(gcode):
+    """Motion extents before the finish block (which returns to X0 Y0)."""
+    return roscam.analyze_motion(gcode.split('(===== FINISH =====)')[0])
 
 
 def _min_z(gcode):
@@ -365,6 +371,95 @@ class JobTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(os.path.exists(os.path.join(out, 'plate_roscam.zip')))
 
+
+
+class SheetTests(unittest.TestCase):
+    """Placing a part on a partly used 24 x 48 sheet."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.plate = build_plate(os.path.join(cls.tmp.name, 'plate.dxf'))   # 6 x 4 plate
+        cls.cfg = roscam.load_config()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def _job(self, sheet, **kw):
+        return roscam.generate_job(self.plate, 'aluminum', '1/4', self.cfg, sheet=sheet, **kw)
+
+    def test_empty_sheet_places_bottom_left(self):
+        res = self._job(roscam.Sheet('AL-1', 24, 48))
+        self.assertTrue(res.success, res.errors)
+        # cutter radius + clearance from the sheet corner
+        self.assertEqual(res.placement, (0.25, 0.25))
+        self.assertEqual(res.stock_size, (24, 48))
+        self.assertEqual(res.sheet_id, 'AL-1')
+        self.assertIn('Sheet AL-1', res.programs[0].gcode)
+        self.assertIn('lower-left corner of sheet', res.programs[0].gcode)
+        self.assertIn('LOWER-LEFT corner of the SHEET', res.setup_sheet)
+        st = _cutting_stats(res.programs[-1].gcode)
+        self.assertAlmostEqual(st.x_min, 0.125, places=3)  # cutter edge clears the sheet edge
+
+    def test_avoids_used_areas(self):
+        used = [[(0, 0), (24, 0), (24, 10), (0, 10)],        # bottom strip used
+                [(0, 10), (8, 10), (8, 20), (0, 20)]]        # and a block above it on the left
+        res = self._job(roscam.Sheet('AL-2', 24, 48, used))
+        self.assertTrue(res.success, res.errors)
+        fp = Polygon(res.footprint)
+        for r in used:
+            self.assertLess(fp.intersection(Polygon(r)).area, 1e-6)
+        self.assertGreaterEqual(res.placement[1], 10.0)
+        # every drill plunge is inside the free area
+        for p in res.programs[:-1]:
+            st = _cutting_stats(p.gcode)
+            self.assertGreaterEqual(st.y_min, 10.0)
+        cut = Polygon(res.cut_region)
+        self.assertAlmostEqual(cut.bounds[2] - cut.bounds[0], 6.25, places=1)  # part + kerf
+
+    def test_manual_placement_checked(self):
+        used = [[(10, 10), (20, 10), (20, 20), (10, 20)]]
+        sheet = roscam.Sheet('AL-3', 24, 48, used)
+        ok = self._job(sheet, placement=(2, 30))
+        self.assertTrue(ok.success, ok.errors)
+        self.assertEqual(ok.placement, (2.0, 30.0))
+        st = _cutting_stats(ok.programs[0].gcode)
+        self.assertGreaterEqual(st.x_min, 2.0)
+        self.assertGreaterEqual(st.y_min, 30.0)
+        bad = self._job(sheet, placement=(12, 12))
+        self.assertFalse(bad.success)
+        self.assertIn('already used', bad.errors[0])
+        edge = self._job(sheet, placement=(20, 30))   # 6" part would hang off the 24" sheet
+        self.assertFalse(edge.success)
+        self.assertIn('does not fit', edge.errors[0])
+
+    def test_full_sheet_reports_no_space(self):
+        res = self._job(roscam.Sheet('AL-4', 24, 48, [[(0, 0), (24, 0), (24, 45), (0, 45)]]))
+        self.assertFalse(res.success)
+        self.assertIn('No free space', res.errors[0])
+
+    def test_rotation_can_make_it_fit(self):
+        # only a tall, narrow strip is free: 5" wide x 30" tall
+        used = [[(5, 0), (24, 0), (24, 48), (5, 48)], [(0, 30), (5, 30), (5, 48), (0, 48)]]
+        sheet = roscam.Sheet('AL-5', 24, 48, used)
+        self.assertFalse(self._job(sheet).success)
+        self.assertTrue(self._job(sheet, rotation=90).success)
+
+    def test_sheet_id_safe_in_gcode(self):
+        res = self._job(roscam.Sheet('AL (3) [x]', 24, 48))
+        self.assertTrue(res.success, res.errors)  # strict hygiene mode would raise on a bad comment
+
+    def test_web_generate_with_sheet(self):
+        with open(self.plate, 'rb') as fh:
+            data = fh.read()
+        out = roscam.web_generate(data, 'p.dxf', 'aluminum', '1/4',
+                                  sheet={'id': 'AL-9', 'width': 24, 'height': 48,
+                                         'regions': [[[0, 0], [24, 0], [24, 5], [0, 5]]]})
+        self.assertTrue(out['success'], out['errors'])
+        self.assertEqual(out['sheet_id'], 'AL-9')
+        self.assertGreaterEqual(out['placement'][1], 5)
+        self.assertGreater(len(out['cut_region']), 3)
 
 
 class WebApiTests(unittest.TestCase):

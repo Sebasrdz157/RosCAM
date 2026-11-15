@@ -65,10 +65,11 @@ self.onmessage = async (event) => {
     } else if (type === 'generate') {
       const bytes = pyodide.toPy(new Uint8Array(args.bytes));
       const overrides = pyodide.toPy(args.overrides || {});
-      result = toJs(roscam.web_generate(bytes, args.filename, args.material, args.thickness,
-                                        overrides, args.rotation));
-      bytes.destroy();
-      overrides.destroy();
+      const sheet = args.sheet ? pyodide.toPy(args.sheet) : null;
+      const placement = args.placement ? pyodide.toPy(args.placement) : null;
+      result = toJs(roscam.web_generate.callKwargs(bytes, args.filename, args.material, args.thickness,
+                                                   overrides, args.rotation, { sheet, placement }));
+      for (const p of [bytes, overrides, sheet, placement]) if (p) p.destroy();
     } else {
       throw new Error(`Unknown request ${type}`);
     }
