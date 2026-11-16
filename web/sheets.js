@@ -32,6 +32,9 @@
     }
     return NaN;
   }
+  // A sheet is "partly used" as soon as it has any used area, cut by RosCAM or measured by
+  // hand. Worked out from its areas, never stored, so it can't go stale.
+  const isStarted = (s) => (s.sheet_regions || []).length > 0;
   const matName = (id) => (S.options.materials.find((m) => m.id === id) || { name: id }).name;
   function show(node, on) { node.classList.toggle('hidden', !on); }
   function msg(text, kind) {
@@ -193,8 +196,9 @@
 
   // ---------------------------------------------------------------- list
   function renderList() {
-    const mat = el.fMaterial.value, thk = el.fThickness.value, showUsed = el.fUsed.checked;
+    const mat = el.fMaterial.value, thk = el.fThickness.value, cond = el.fCond.value, showUsed = el.fUsed.checked;
     const list = S.sheets.filter((s) => (!mat || s.material === mat) && (!thk || s.thickness === thk)
+                                      && (!cond || (cond === 'started') === isStarted(s))
                                       && (showUsed || s.status === 'active'));
     el.count.textContent = S.loaded && S.sheets.length
       ? `Showing ${list.length} of ${S.sheets.length} sheet${S.sheets.length === 1 ? '' : 's'}` : '';
@@ -213,16 +217,19 @@
         textContent: `${matName(s.material)} ${s.thickness}", ${fmt(s.width)} x ${fmt(s.height)}`,
       });
       const freeEl = Object.assign(document.createElement('span'), {
-        className: 'sheet-free', textContent: s.status === 'used_up' ? 'Used up' : `${free}% free`,
+        className: 'sheet-free', textContent: s.status === 'used_up' ? 'Finished' : `${free}% free`,
       });
-      info.append(id, meta, freeEl);
+      const condEl = Object.assign(document.createElement('span'), {
+        className: `sheet-cond ${isStarted(s) ? 'started' : 'full'}`, textContent: isStarted(s) ? 'Partly used' : 'Full sheet',
+      });
+      info.append(id, meta, condEl, freeEl);
       card.append(canvas, info);
       card.addEventListener('click', () => { S.selected = s; S.draft = null; setMode('edit'); renderList(); renderEditor(); });
       requestAnimationFrame(() => drawSheet(prepCanvas(canvas, 60, 110), s, 60, 110, { pad: 4, origin: false }));
       return card;
     }));
     el.empty.textContent = S.sheets.length
-      ? 'No sheets match. Change "Show only" above, or tick "Include used-up sheets".'
+      ? 'No sheets match. Change "Show only" above, or tick "Also show finished sheets".'
       : 'No sheets yet. Click "+ Add a sheet" to add the first one.';
     show(el.empty, S.loaded && list.length === 0);
   }
@@ -233,6 +240,9 @@
     if (!s) { if (S.mode === 'edit') setMode('empty'); return; }
     el.edTitle.textContent = s.id;
     el.edMeta.textContent = `${matName(s.material)}, ${s.thickness}" thick, ${fmt(s.width)}" x ${fmt(s.height)}"`;
+    el.edCondition.textContent = isStarted(s)
+      ? 'Partly used: it has areas cut by RosCAM or measured by hand (set automatically).'
+      : 'Full sheet: nothing has been cut or marked on it yet (set automatically).';
     el.edStatus.value = s.status;
     el.edNotes.value = s.notes || '';
     drawEditor();
@@ -339,7 +349,7 @@
       msg: $('sheets-msg'), account: $('account-card'), panel: $('sheet-panel'), panelEmpty: $('panel-empty'),
       newSheet: $('new-sheet'), addCancel: $('add-cancel'), edClose: $('ed-close'), signinForm: $('signin-form'), email: $('signin-email'), password: $('signin-password'),
       signedIn: $('signed-in'), who: $('signed-in-who'), signout: $('signout'),
-      fMaterial: $('f-material'), fThickness: $('f-thickness'), fUsed: $('f-used'),
+      fMaterial: $('f-material'), fThickness: $('f-thickness'), fUsed: $('f-used'), fCond: $('f-cond'), edCondition: $('ed-condition'),
       list: $('sheet-list'), count: $('sheet-count'), empty: $('sheet-empty'),
       addForm: $('add-sheet'), aId: $('a-id'), aMaterial: $('a-material'), aThickness: $('a-thickness'),
       aW: $('a-width'), aH: $('a-height'), aNotes: $('a-notes'),
@@ -365,6 +375,7 @@
     el.fMaterial.addEventListener('change', () => { fillThk(el.fMaterial, el.fThickness, true); renderList(); });
     el.fThickness.addEventListener('change', renderList);
     el.fUsed.addEventListener('change', renderList);
+    el.fCond.addEventListener('change', renderList);
     el.aMaterial.addEventListener('change', () => { fillThk(el.aMaterial, el.aThickness, false); refreshSuggestedId(); });
     el.aThickness.addEventListener('change', refreshSuggestedId);
     el.aId.addEventListener('input', () => { S.idTouched = el.aId.value.trim() !== ''; });
@@ -404,7 +415,7 @@
     el.edStatus.addEventListener('change', () => {
       const s = S.selected;
       guarded(() => RosDB.updateSheet(s.id, { status: el.edStatus.value }),
-              el.edStatus.value === 'used_up' ? `${s.id} marked as used up.` : `${s.id} is active again.`);
+              el.edStatus.value === 'used_up' ? `${s.id} marked as finished: nothing else fits on it.` : `${s.id} is active again.`);
     });
     el.edSaveNotes.addEventListener('click', () => {
       const s = S.selected;

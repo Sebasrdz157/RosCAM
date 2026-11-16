@@ -114,6 +114,10 @@ async function fakeSupabase(route) {
   await page.selectOption('#f-material', 'polycarbonate');
   console.log('filter poly ->', await page.textContent('#sheet-count'), '|', await page.textContent('#sheet-empty'));
   await page.selectOption('#f-material', '');
+  console.log('fresh sheet:', await page.textContent('.sheet-card .sheet-cond'), '|', await page.textContent('#ed-condition'));
+  await page.selectOption('#f-cond', 'started');
+  console.log('partly-used filter (fresh) ->', await page.textContent('#sheet-count'));
+  await page.selectOption('#f-cond', '');
   await page.click('.sheet-card');
   // used area by measurement: bottom 10"
   await page.fill('#r-x', '0'); await page.fill('#r-y', '0'); await page.fill('#r-w', '23 63/64'); await page.fill('#r-h', '10.015625');
@@ -133,6 +137,21 @@ async function fakeSupabase(route) {
   await page.waitForTimeout(400);
   console.log('regions:', await page.$$eval('#region-list li span', (l) => l.map((x) => x.textContent)));
   console.log('card:', await page.textContent('.sheet-card'));
+  console.log('condition now:', await page.textContent('#ed-condition'));
+  await page.selectOption('#f-cond', 'started');
+  console.log('partly-used filter ->', await page.textContent('#sheet-count'));
+  await page.selectOption('#f-cond', 'full');
+  console.log('full-sheet filter ->', await page.textContent('#sheet-count'));
+  await page.selectOption('#f-cond', '');
+  await page.selectOption('#ed-status', 'used_up');
+  await page.waitForTimeout(400);
+  console.log('finished:', await page.textContent('#sheets-msg'), '| listed:', await page.textContent('#sheet-count'));
+  await page.check('#f-used');
+  console.log('with finished shown:', await page.textContent('.sheet-card .sheet-free'));
+  await page.click('.sheet-card');
+  await page.selectOption('#ed-status', 'active');
+  await page.waitForTimeout(400);
+  await page.uncheck('#f-used');
   await page.screenshot({ path: `${S}/sheets_view.png`, fullPage: true });
 
   // --- Programs on that sheet (picked from the sheet list; parts are placed by nesting)
