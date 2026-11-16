@@ -16,3 +16,4 @@ pygcode>=0.2.0
 termcolor>=2.0.0
 numpy>=1.24.0        # gcode_sim heightmap simulator
 Pillow>=10.0.0       # gcode_sim golden/diff PNG rendering
+pyclipper>=1.3.0     # robust polygon offsets for detail machining (also in Pyodide)

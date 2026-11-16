@@ -13,6 +13,10 @@ const PY_FILES = [
 const PYODIDE_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 
 let ready = null;
+let lastPyodide = null;
+function pyodideIsDead() {
+  try { return !lastPyodide || lastPyodide.runPython('1') !== 1; } catch (_) { return true; }
+}
 
 async function boot() {
   try {
@@ -25,7 +29,7 @@ async function boot() {
   pyodide.setStdout({ batched: () => {} });
   // ezdxf's dependencies all ship with Pyodide; load them from there, then ezdxf itself
   // (a pure-Python wheel) from PyPI.
-  await pyodide.loadPackage(['numpy', 'shapely', 'pyyaml', 'micropip',
+  await pyodide.loadPackage(['numpy', 'shapely', 'pyclipper', 'pyyaml', 'micropip',
                              'typing-extensions', 'pyparsing', 'fonttools']);
   const micropip = pyodide.pyimport('micropip');
   await micropip.install(`ezdxf==${EZDXF_VERSION}`);
@@ -33,11 +37,12 @@ async function boot() {
   const dir = '/home/pyodide/roscam';
   pyodide.FS.mkdirTree(dir);
   for (const name of PY_FILES) {
-    const res = await fetch(`py/${name}`, { cache: 'no-cache' });
+    const res = await fetch(`py/${name}?v=dev`, { cache: 'no-cache' });
     if (!res.ok) throw new Error(`Could not load ${name} (${res.status})`);
     pyodide.FS.writeFile(`${dir}/${name}`, await res.text());
   }
   pyodide.runPython(`import sys; sys.path.insert(0, ${JSON.stringify(dir)}); import roscam`);
+  lastPyodide = pyodide;
   return pyodide;
 }
 
@@ -61,7 +66,9 @@ self.onmessage = async (event) => {
     const roscam = pyodide.pyimport('roscam');
     let result;
     if (type === 'options') {
-      result = toJs(roscam.web_options());
+      const tools = pyodide.toPy((args && args.tools) || []);
+      result = toJs(roscam.web_options.callKwargs({ tools }));
+      tools.destroy();
     } else if (type === 'generate') {
       const bytes = pyodide.toPy(new Uint8Array(args.bytes));
       const overrides = pyodide.toPy(args.overrides || {});
@@ -72,26 +79,34 @@ self.onmessage = async (event) => {
       for (const p of [bytes, overrides, sheet, placement]) if (p) p.destroy();
     } else if (type === 'part_info') {
       const bytes = pyodide.toPy(new Uint8Array(args.bytes));
-      result = toJs(roscam.web_part_info(bytes, args.filename, args.material, args.thickness));
+      const tools = pyodide.toPy(args.tools || []);
+      result = toJs(roscam.web_part_info.callKwargs(bytes, args.filename, args.material, args.thickness, { tools }));
       bytes.destroy();
+      tools.destroy();
     } else if (type === 'nest_setup') {
       const sheet = pyodide.toPy(args.sheet);
-      result = toJs(roscam.web_nest_setup(sheet));
+      const tools = pyodide.toPy(args.tools || []);
+      result = toJs(roscam.web_nest_setup.callKwargs(sheet, { tools }));
       sheet.destroy();
+      tools.destroy();
     } else if (type === 'generate_sheet') {
       const files = pyodide.toPy(args.files.map((f) => ({ name: f.name, bytes: new Uint8Array(f.bytes) })));
       const sheet = pyodide.toPy(args.sheet);
       const placements = pyodide.toPy(args.placements);
       const overrides = pyodide.toPy(args.overrides || {});
       const unplaced = pyodide.toPy(args.unplaced || []);
-      result = toJs(roscam.web_generate_sheet(files, args.material, args.thickness, sheet, placements,
-                                              overrides, unplaced));
-      for (const p of [files, sheet, placements, overrides, unplaced]) p.destroy();
+      const tools = pyodide.toPy(args.tools || []);
+      result = toJs(roscam.web_generate_sheet.callKwargs(files, args.material, args.thickness, sheet, placements,
+                                                         overrides, unplaced, { job_name: args.jobName || null, tools }));
+      for (const p of [files, sheet, placements, overrides, unplaced, tools]) p.destroy();
     } else {
       throw new Error(`Unknown request ${type}`);
     }
     self.postMessage({ id, ok: true, result });
   } catch (err) {
-    self.postMessage({ id, ok: false, error: String(err && err.message || err) });
+    const message = String(err && err.message || err);
+    // A fatal Pyodide error leaves the interpreter unusable: tell the page to start a new worker.
+    const fatal = /fatal error|GIL not held/i.test(message) || (ready && pyodideIsDead());
+    self.postMessage({ id, ok: false, error: message, fatal });
   }
 };

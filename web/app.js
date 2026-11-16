@@ -2,8 +2,10 @@
 // CAM work happens in worker.js (Python in the browser); nesting in nest/nest-worker.js.
 'use strict';
 
-const COLORS = ['#58a6ff', '#f0645b', '#d29922', '#a371f7', '#3fb950'];
-const ENDMILL_COLOR = '#e8eaf0';
+// Drilling in warm colors, milling in cool ones; each bit gets its own.
+const DRILL_COLORS = ['#f0645b', '#d29922', '#f778ba', '#ff9e64', '#e3b341'];
+const MILL_COLORS = ['#58a6ff', '#3fb950', '#a371f7', '#39c5cf', '#e8eaf0'];
+const RAPID_COLOR = '#6e7681';
 const PART_FILL = 'rgba(88,166,255,.22)';
 const MILL = 'mill';
 const NEST_TIME_LIMIT_MS = 20000;
@@ -23,6 +25,10 @@ const els = {
   simSpeed: $('sim-speed'), simReset: $('sim-reset'), simStage: $('sim-stage'), simCanvas: $('sim-canvas'),
   simFallback: $('sim-fallback'), simScrubber: $('sim-scrubber'), simLabel: $('sim-label'), simOp: $('sim-op'),
   cutActions: $('cut-actions'), markCut: $('mark-cut'), cutMsg: $('cut-msg'),
+  cutPick: $('cut-pick'), cutList: $('cut-list'), cutSave: $('cut-save'), cutCancel: $('cut-cancel'),
+  cutAll: $('cut-all'), cutNone: $('cut-none'), simLegend: $('sim-legend'),
+  zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), zoomFit: $('zoom-fit'),
+  onePart: $('one-part'), onePartZip: $('one-part-zip'), onePartMsg: $('one-part-msg'),
 };
 
 const state = {
@@ -35,28 +41,58 @@ const state = {
   nesting: false,
   result: null,         // programs for the current layout
   job: 0,               // bumps whenever the inputs change, so stale work is ignored
-  markedFor: null,      // the result already recorded as cut (prevents double-recording)
+  marked: new Set(),    // copies of the current result already recorded as cut
+  lastOnePart: null,    // the copy last downloaded on its own (pre-ticked when marking cut)
+  view: { zoom: 1, cx: null, cy: null, sheet: null },   // preview zoom and centre (inches)
 };
 
+// Extra bits from the Tools screen (Supabase), passed to the CAM engine with each job.
+function libraryTools() {
+  return window.RosTools ? RosTools.tools() : [];
+}
+
 // ---- CAM worker (Python) ---------------------------------------------------------
-const worker = new Worker('worker.js');
+let worker = null;
 let nextId = 1;
 const pending = new Map();
-worker.onmessage = (e) => {
-  const { id, ok, result, error } = e.data;
-  const p = pending.get(id);
-  if (!p) return;
-  pending.delete(id);
-  ok ? p.resolve(result) : p.reject(new Error(error));
-};
-// If the worker itself dies (e.g. the Pyodide CDN is unreachable), fail every waiting
-// request instead of leaving the page spinning forever.
-worker.onerror = (e) => {
-  e.preventDefault();
-  const msg = e.message || 'the CAM engine stopped unexpectedly';
-  for (const p of pending.values()) p.reject(new Error(msg));
-  pending.clear();
-};
+function startWorker() {
+  worker = new Worker('worker.js?v=dev');
+  worker.onmessage = (e) => {
+    const { id, ok, result, error, fatal } = e.data;
+    const p = pending.get(id);
+    if (fatal) {
+      // The Python engine crashed: start a fresh one so the page keeps working.
+      console.warn('CAM engine crashed; restarting it', error);
+      worker.terminate();
+      for (const [otherId, other] of pending) {          // nothing else will answer on the dead one
+        if (otherId !== id) other.reject(new Error('the CAM engine restarted; try again'));
+      }
+      for (const otherId of [...pending.keys()]) if (otherId !== id) pending.delete(otherId);
+      startWorker();
+    }
+    if (!p) return;
+    pending.delete(id);
+    // An old cached worker.js doesn't know newer requests: say what to do about it.
+    if (!ok && /^Unknown request/.test(error)) {
+      p.reject(new Error('RosCAM was updated and this browser still has part of the old version. Reload the page (Ctrl+Shift+R).'));
+      return;
+    }
+    if (!ok && fatal) {
+      p.reject(new Error(`the CAM engine crashed on this part (${error.split('\n')[0].slice(0, 160)}). It has been restarted; please report the DXF that caused it.`));
+      return;
+    }
+    ok ? p.resolve(result) : p.reject(new Error(error));
+  };
+  // If the worker itself dies (e.g. the Pyodide CDN is unreachable), fail every waiting
+  // request instead of leaving the page spinning forever.
+  worker.onerror = (e) => {
+    e.preventDefault();
+    const msg = e.message || 'the CAM engine stopped unexpectedly';
+    for (const p of pending.values()) p.reject(new Error(msg));
+    pending.clear();
+  };
+}
+startWorker();
 function call(type, args) {
   const id = nextId++;
   return new Promise((resolve, reject) => {
@@ -66,7 +102,7 @@ function call(type, args) {
 }
 
 // ---- nesting worker (adapted from SVGnest) ------------------------------------------
-const nestWorker = new Worker('nest/nest-worker.js');
+const nestWorker = new Worker('nest/nest-worker.js?v=dev');
 nestWorker.onmessage = (e) => {
   let m = e.data;
   if (m.run !== state.nestRun) return;            // an older search
@@ -100,6 +136,8 @@ call('options').then((opts) => {
   state.options = opts;
   RosSheets.init(opts);
   RosSheets.onChange(() => { fillStock(); refreshCutButton(); });
+  RosTools.init(opts);
+  RosTools.onChange(onToolsChanged);
   restoreChoices();
   els.rotation.disabled = false;
   els.engine.classList.add('ready');
@@ -123,14 +161,31 @@ function saveChoices() {
   } catch (_) { /* ignore */ }
 }
 
-els.stock.addEventListener('change', () => { saveChoices(); state.markedFor = null; refresh(); });
+els.stock.addEventListener('change', () => { saveChoices(); state.marked = new Set(); state.lastOnePart = null; refresh(); });
 els.rotation.addEventListener('change', () => { saveChoices(); refresh(); });
 els.goSheets.addEventListener('click', () => document.querySelector('.view-tab[data-view="sheets"]').click());
+
+// The tool library changed: refresh the menus that list bits, and re-plan the parts
+// (a new drill or end mill can change how holes and details are made).
+let toolsKey = '[]';
+async function onToolsChanged() {
+  const key = JSON.stringify(libraryTools());
+  if (key === toolsKey) return;
+  toolsKey = key;
+  try {
+    const opts = await call('options', { tools: libraryTools() });
+    state.options = { ...state.options, ...opts };
+  } catch (err) {
+    console.warn('Could not refresh the tool list', err);
+  }
+  for (const p of state.parts) p.infoKey = '';
+  refresh();
+}
 
 // ---- screens --------------------------------------------------------------------
 document.querySelectorAll('.view-tab').forEach((tab) => tab.addEventListener('click', () => {
   document.querySelectorAll('.view-tab').forEach((t) => t.setAttribute('aria-pressed', String(t === tab)));
-  for (const v of ['programs', 'sheets']) $(`view-${v}`).classList.toggle('hidden', v !== tab.dataset.view);
+  for (const v of ['programs', 'sheets', 'tools']) $(`view-${v}`).classList.toggle('hidden', v !== tab.dataset.view);
   if (tab.dataset.view === 'sheets') RosSheets.redraw();
   else if (state.result || state.layout) drawPreview(state.result);
 }));
@@ -241,7 +296,7 @@ async function doRefresh() {
   state.layout = null;
   state.prevBest = null;
   state.result = null;
-  state.markedFor = null;
+  state.marked = new Set(); state.lastOnePart = null;
   renderParts();
   if (!state.options) return;
   const sheet = currentSheet();
@@ -265,7 +320,8 @@ async function doRefresh() {
   try {
     for (const p of state.parts) {
       if (p.infoKey !== key) {
-        p.info = await call('part_info', { bytes: p.bytes.slice(0), filename: `${p.name}.dxf`, material, thickness });
+        p.info = await call('part_info', { bytes: p.bytes.slice(0), filename: `${p.name}.dxf`, material, thickness,
+                                           tools: libraryTools() });
         p.infoKey = key;
         if (job !== state.job) return;
         renderParts();
@@ -292,7 +348,7 @@ async function doRefresh() {
 
   let setup;
   try {
-    setup = await call('nest_setup', { sheet });
+    setup = await call('nest_setup', { sheet, tools: libraryTools() });
   } catch (err) {
     if (job === state.job) showOnlyError(`Could not prepare sheet ${sheet.id}: ${err.message}`);
     return;
@@ -362,7 +418,7 @@ async function generatePrograms() {
       files: state.parts.map((p) => ({ name: p.name, bytes: p.bytes.slice(0) })),
       material: sheet.material, thickness: sheet.thickness, sheet,
       placements: layout.placements.map((p) => ({ part: p.part, x: p.x, y: p.y, rotation: p.rotation })),
-      overrides: state.overrides, unplaced: unplacedNames(layout),
+      overrides: state.overrides, unplaced: unplacedNames(layout), tools: libraryTools(),
     });
     if (job !== state.job || run !== state.nestRun) return;
     state.result = res;
@@ -436,6 +492,7 @@ function render(res) {
   refreshCutButton();
   if (res.success) {
     renderPrograms(res.programs);
+    fillOnePart(res);
     renderSimulation(res);
     els.sheet.textContent = res.setup_sheet;
   }
@@ -446,31 +503,55 @@ function refreshCutButton() {
   const res = state.result;
   const show = !!(res && res.success && res.sheet_id);
   els.cutActions.classList.toggle('hidden', !show);
-  if (!show) return;
-  const done = state.markedFor === res;
-  els.markCut.textContent = done ? `Recorded on ${res.sheet_id}` : `Mark as cut on ${res.sheet_id}`;
-  els.markCut.disabled = done || !RosSheets.canEdit();
+  if (!show) { els.cutPick.classList.add('hidden'); return; }
+  const n = res.parts.length, done = state.marked.size;
+  els.markCut.textContent = done === n ? `All recorded on ${res.sheet_id}`
+    : done ? `Mark more as cut (${done} of ${n} recorded)` : `Mark as cut on ${res.sheet_id}`;
+  els.markCut.disabled = done === n || !RosSheets.canEdit();
   if (!done) els.cutMsg.textContent = RosSheets.canEdit() ? 'Do this after the job has run.' : 'Sign in on the Sheets screen to record cuts.';
 }
 RosDB.onAuthChange(refreshCutButton);
 
-els.markCut.addEventListener('click', async () => {
+els.markCut.addEventListener('click', () => {
   const res = state.result;
-  if (!res || !res.sheet_id || state.markedFor === res) return;
-  const n = res.parts.length;
-  if (!confirm(`Record ${n} part${n === 1 ? '' : 's'} as cut on sheet ${res.sheet_id}? Those areas will be off limits from now on.`)) return;
-  els.markCut.disabled = true;
+  if (!res || !res.sheet_id) return;
+  els.cutList.replaceChildren(...res.parts.map((p, i) => {
+    const label = document.createElement('label');
+    const box = Object.assign(document.createElement('input'), { type: 'checkbox', value: String(i) });
+    const already = state.marked.has(i);
+    box.checked = !already && (state.lastOnePart === null || state.lastOnePart === i);
+    box.disabled = already;
+    label.append(box, document.createTextNode(` ${p.label}`));
+    if (already) label.classList.add('done');
+    return label;
+  }));
+  els.cutPick.classList.remove('hidden');
+  els.cutPick.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+});
+const cutBoxes = () => [...els.cutList.querySelectorAll('input:not(:disabled)')];
+els.cutAll.addEventListener('click', () => cutBoxes().forEach((b) => { b.checked = true; }));
+els.cutNone.addEventListener('click', () => cutBoxes().forEach((b) => { b.checked = false; }));
+els.cutCancel.addEventListener('click', () => els.cutPick.classList.add('hidden'));
+
+els.cutSave.addEventListener('click', async () => {
+  const res = state.result;
+  const picks = cutBoxes().filter((b) => b.checked).map((b) => Number(b.value));
+  if (!res || !picks.length) { els.cutMsg.textContent = 'Tick at least one part.'; return; }
+  els.cutSave.disabled = true;
   let saved = 0;
   try {
-    for (const p of res.parts) {
+    for (const i of picks) {
+      const p = res.parts[i];
       await RosDB.addRegion({ sheet_id: res.sheet_id, kind: 'cut', label: p.label, polygon: p.cut_region });
+      state.marked.add(i);
       saved++;
     }
-    state.markedFor = res;
-    els.cutMsg.textContent = `Saved. ${res.sheet_id} now shows ${n === 1 ? 'this part' : `these ${n} parts`} as used.`;
+    els.cutMsg.textContent = `Saved ${saved} part${saved === 1 ? '' : 's'} as cut on ${res.sheet_id}.`;
+    els.cutPick.classList.add('hidden');
   } catch (err) {
-    els.cutMsg.textContent = `${err.message}${saved ? ` (${saved} of ${n} were saved before this.)` : ''}`;
+    els.cutMsg.textContent = `${err.message}${saved ? ` (${saved} were saved before this.)` : ''}`;
   }
+  els.cutSave.disabled = false;
   await RosSheets.reload();
   drawPreview(res);
   refreshCutButton();
@@ -480,7 +561,9 @@ els.markCut.addEventListener('click', async () => {
 function toolLabel(id) {
   if (id === MILL) return `Mill with the ${state.options.endmill.name}`;
   const d = state.options.drills.find((x) => x.id === id);
-  return d ? d.name : 'Cannot be made';
+  if (d) return d.name;
+  const e = (state.options.endmills || []).find((x) => x.id === id);
+  return e ? `Mill with the ${e.name}` : 'Cannot be made';
 }
 
 function renderHoles(groups) {
@@ -495,7 +578,9 @@ function renderHoles(groups) {
     const sel = document.createElement('select');
     sel.setAttribute('aria-label', `Tool for ${g.diameter.toFixed(4)} inch holes`);
     const choices = [...state.options.drills.map((d) => d.id)];
-    if (g.diameter >= state.options.endmill.diameter - 0.002) choices.push(MILL);
+    for (const e of state.options.endmills || [state.options.endmill]) {       // every end mill that fits
+      if (g.diameter >= e.diameter - 0.002) choices.push(e.id === state.options.endmill.id ? MILL : e.id);
+    }
     if (!g.tool) sel.add(new Option('Cannot be made - pick a tool', ''));
     for (const id of choices) {
       const auto = id === g.auto_tool ? ' (auto)' : '';
@@ -520,8 +605,13 @@ function renderHoles(groups) {
 }
 
 // ---- programs + downloads -------------------------------------------------------
+function programColors(programs) {
+  let d = 0, m = 0;
+  return programs.map((p) => (p.tool_type === 'drill'
+    ? DRILL_COLORS[d++ % DRILL_COLORS.length] : MILL_COLORS[m++ % MILL_COLORS.length]));
+}
 function programColor(p, i) {
-  return p.tool_type === 'drill' ? COLORS[i % COLORS.length] : ENDMILL_COLOR;
+  return programColors((state.result && state.result.programs) || [p])[i] || MILL_COLORS[0];
 }
 
 function renderPrograms(programs) {
@@ -543,10 +633,44 @@ function renderPrograms(programs) {
 els.zip.addEventListener('click', () => {
   const res = state.result;
   if (!res || !res.zip_base64) return;
-  const raw = atob(res.zip_base64);
+  download(zipBlob(res.zip_base64), res.zip_name);
+});
+
+function zipBlob(b64) {
+  const raw = atob(b64);
   const bytes = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-  download(new Blob([bytes], { type: 'application/zip' }), res.zip_name);
+  return new Blob([bytes], { type: 'application/zip' });
+}
+
+function fillOnePart(res) {
+  els.onePart.replaceChildren(...res.parts.map((p, i) => new Option(p.label, String(i))));
+  els.onePartMsg.textContent = '';
+}
+
+els.onePartZip.addEventListener('click', async () => {
+  const res = state.result, layout = state.layout, sheet = currentSheet();
+  const i = Number(els.onePart.value);
+  if (!res || !layout || !sheet || !res.parts[i]) return;
+  const label = res.parts[i].label;
+  els.onePartZip.disabled = true;
+  els.onePartMsg.textContent = `Making programs for ${label}...`;
+  try {
+    const pl = layout.placements[i];
+    const one = await call('generate_sheet', {
+      files: state.parts.map((p) => ({ name: p.name, bytes: p.bytes.slice(0) })),
+      material: sheet.material, thickness: sheet.thickness, sheet, tools: libraryTools(),
+      placements: [{ part: pl.part, x: pl.x, y: pl.y, rotation: pl.rotation }], overrides: state.overrides,
+      jobName: label.replace(/ #/, '_'),
+    });
+    if (!one.success) throw new Error(one.errors.join(' '));
+    download(zipBlob(one.zip_base64), one.zip_name);
+    state.lastOnePart = i;
+    els.onePartMsg.textContent = `Downloaded ${label} only (${one.programs.length} program${one.programs.length === 1 ? '' : 's'}).`;
+  } catch (err) {
+    els.onePartMsg.textContent = `Could not make it: ${err.message}`;
+  }
+  els.onePartZip.disabled = false;
 });
 
 function download(blob, name) {
@@ -603,9 +727,14 @@ function drawPreview(res) {
   ctx.clearRect(0, 0, cssW, cssH);
 
   const pad = 16;
-  const scale = Math.min((cssW - 2 * pad) / sx, (cssH - 2 * pad) / sy);
-  const ox = (cssW - sx * scale) / 2, oy = (cssH + sy * scale) / 2;
+  const fit = Math.min((cssW - 2 * pad) / sx, (cssH - 2 * pad) / sy);
+  const v = state.view;
+  const sheetKey = `${res ? res.sheet_id : sheetData.id}|${sx}x${sy}`;
+  if (v.sheet !== sheetKey || v.cx === null) { v.zoom = 1; v.cx = sx / 2; v.cy = sy / 2; v.sheet = sheetKey; }
+  const scale = fit * v.zoom;
+  const ox = cssW / 2 - v.cx * scale, oy = cssH / 2 + v.cy * scale;
   const P = (px, py) => [ox + px * scale, oy - py * scale];
+  state.previewMap = { scale, ox, oy, fit, sx, sy, cssW, cssH };
   const poly = (pts) => {
     ctx.beginPath();
     pts.forEach(([x, y], i) => (i ? ctx.lineTo(...P(x, y)) : ctx.moveTo(...P(x, y))));
@@ -641,7 +770,7 @@ function drawPreview(res) {
 
   const legend = [];
   for (const [idx, p] of ((res && res.success) ? res.programs : []).entries()) {
-    const color = programColor(p, idx);
+    const color = programColors(res.programs)[idx];
     legend.push(`<span style="--swatch:${color}">${idx + 1}. ${escapeHtml(p.tool_name)}</span>`);
     const moves = parseMoves(p.gcode);
     if (p.tool_type === 'drill') {
@@ -692,6 +821,68 @@ function escapeHtml(s) {
 
 window.addEventListener('resize', () => { if (state.result || state.layout) drawPreview(state.result); });
 
+// ---- preview zoom and pan -----------------------------------------------------------
+function redrawPreview() { if (state.result || state.layout) drawPreview(state.result); }
+function zoomAt(factor, px, py) {
+  const m = state.previewMap, v = state.view;
+  if (!m) return;
+  const z = Math.max(1, Math.min(40, v.zoom * factor));
+  if (px === undefined) { px = m.cssW / 2; py = m.cssH / 2; }
+  // keep the point under the cursor where it is
+  const ix = (px - m.ox) / m.scale, iy = (m.oy - py) / m.scale;
+  const ns = m.fit * z;
+  v.cx = ix - (px - m.cssW / 2) / ns;
+  v.cy = iy + (py - m.cssH / 2) / ns;
+  v.zoom = z;
+  if (z === 1) { v.cx = m.sx / 2; v.cy = m.sy / 2; }
+  redrawPreview();
+}
+els.zoomIn.addEventListener('click', () => zoomAt(1.6));
+els.zoomOut.addEventListener('click', () => zoomAt(1 / 1.6));
+els.zoomFit.addEventListener('click', () => { state.view.cx = null; redrawPreview(); });
+els.preview.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const r = els.preview.getBoundingClientRect();
+  zoomAt(Math.pow(1.0015, -e.deltaY), e.clientX - r.left, e.clientY - r.top);
+}, { passive: false });
+(function bindPreviewPan() {
+  const c = els.preview, pts = new Map();
+  let pinch = null;
+  c.addEventListener('pointerdown', (e) => {
+    c.setPointerCapture(e.pointerId);
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    c.classList.add('dragging');
+    if (pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) };
+    }
+  });
+  c.addEventListener('pointermove', (e) => {
+    const prev = pts.get(e.pointerId);
+    if (!prev || !state.previewMap) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size === 2 && pinch) {
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      const r = c.getBoundingClientRect();
+      zoomAt(d / pinch.d, (a.x + b.x) / 2 - r.left, (a.y + b.y) / 2 - r.top);
+      pinch.d = d;
+      return;
+    }
+    const s = state.previewMap.scale;
+    state.view.cx -= (e.clientX - prev.x) / s;
+    state.view.cy += (e.clientY - prev.y) / s;
+    redrawPreview();
+  });
+  const end = (e) => {
+    pts.delete(e.pointerId);
+    if (pts.size < 2) pinch = null;
+    if (!pts.size) c.classList.remove('dragging');
+  };
+  c.addEventListener('pointerup', end);
+  c.addEventListener('pointercancel', end);
+})();
+
 // ---- 3D simulation (viewer.js, adapted from PenguinCAM) ---------------------------
 let viewer = null;
 
@@ -737,7 +928,12 @@ function loadSimulation() {
   const choice = els.simProgram.value;
   const progs = choice === 'all' ? res.programs : [res.programs[Number(choice)]];
   const [sx, sy] = res.stock_size;
+  const colors = programColors(res.programs);
+  els.simLegend.innerHTML = res.programs.map((p, i) => (choice === 'all' || Number(choice) === i
+    ? `<span style="--swatch:${colors[i]}">${i + 1}. ${escapeHtml(p.tool_name)}</span>` : '')).join('')
+    + '<span class="rapid">rapid moves</span>';
   viewer.load(progs.map((p) => p.gcode).join('\n'), {
+    sectionColors: colors, rapidColor: RAPID_COLOR,
     stockWidth: sx, stockDepth: sy, stockHeight: res.thickness, stockTop: 0,
     toolDiameter: progs[progs.length - 1].tool_diameter,
   });

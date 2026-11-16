@@ -4,6 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## RosCAM (this fork)
 
+**Start with `docs/HANDOFF.md`**: the shop's setup, decisions, branch state, how to test
+(including the browser tests in `tests/browser/`), hard-won gotchas, and the next task.
+
 RosCAM is a fork of PenguinCAM for a shop with an Axiom router, a Richauto controller, and
 **no tool changer**. It writes **one program per tool** (drills first, then the 1/4" end mill
 for milled holes, pockets and the outline with tabs) plus a setup sheet.

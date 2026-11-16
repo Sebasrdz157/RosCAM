@@ -83,10 +83,11 @@
         throw new Error(t ? 'This account is not allowed to change sheets. Ask an admin to add it to the editors list.'
                           : 'Sign in with the team account to change sheets.');
       }
-      if (res.status === 404 && /sheets|sheet_regions/.test(msg)) {
-        throw new Error('The sheet tables are missing. Run supabase/schema.sql in the Supabase SQL editor.');
+      if (res.status === 404 && /sheets|sheet_regions|tools/.test(msg)) {
+        throw new Error(`The ${/tools/.test(msg) ? 'tool library' : 'sheet'} table is missing. Run supabase/schema.sql in the Supabase SQL editor.`);
       }
-      if (data && data.code === '23505') throw new Error('A sheet with that ID already exists.');
+      if (data && data.code === '23505') throw new Error(path.startsWith('tools') ? 'A bit with that ID already exists.' : 'A sheet with that ID already exists.');
+      if (data && data.code === '23514') throw new Error(`The database rejected a value: ${msg}`);
       throw new Error(msg);
     }
     // Row rules hide rows a user may not change, so a refused update/delete "succeeds"
@@ -109,5 +110,9 @@
     deleteSheet: (id) => rest('DELETE', `sheets?id=eq.${enc(id)}`),
     addRegion: (region) => rest('POST', 'sheet_regions', region).then((r) => r[0]),
     deleteRegion: (id) => rest('DELETE', `sheet_regions?id=eq.${enc(id)}`),
+    listTools: () => rest('GET', 'tools?select=*&order=type.asc,diameter.desc'),
+    addTool: (tool) => rest('POST', 'tools', tool).then((r) => r[0]),
+    updateTool: (id, patch) => rest('PATCH', `tools?id=eq.${enc(id)}`, patch).then((r) => r[0]),
+    deleteTool: (id) => rest('DELETE', `tools?id=eq.${enc(id)}`),
   };
 })();

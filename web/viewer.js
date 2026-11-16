@@ -7,6 +7,8 @@
  *     programs (tens of thousands of moves) scrub smoothly.
  *   - Each move remembers the "(Program n of N: ...)" header it came from, shown in the
  *     scrubber, so several programs can be played back to back.
+ *   - opts.sectionColors[n-1] colors program n's moves (full when cut, faded when still to
+ *     come) and opts.rapidColor the rapid (G0) moves, so each bit has its own color.
  *
  * Arc tessellation, coordinate mapping gcode (x,y,z) -> THREE (x, z, -y) with
  * gcode-Z as the up axis, stock box, tool, green-completed / gold-upcoming
@@ -133,11 +135,11 @@
       if (y < b.minY) b.minY = y; if (y > b.maxY) b.maxY = y;
       if (z < b.minZ) b.minZ = z; if (z > b.maxZ) b.maxZ = z;
     }
-    var section = '';
+    var section = '', sectionIndex = -1;
     for (var li = 0; li < lines.length; li++) {
       var t = lines[li].trim();
-      var sec = t.match(/^\(Program (\d+ of \d+: .*)\)$/);
-      if (sec) { section = 'Program ' + sec[1]; continue; }
+      var sec = t.match(/^\(Program ((\d+) of \d+: .*)\)$/);
+      if (sec) { section = 'Program ' + sec[1]; sectionIndex = parseInt(sec[2], 10) - 1; continue; }
       if (!t || t.charAt(0) === '(' || t.charAt(0) === ';') continue;
       var gm = t.match(/^(G[0-3])\b/);
       if (!gm) continue;
@@ -164,14 +166,14 @@
             var ang = sa + sweep * tt;
             var px = ccx + r * Math.cos(ang), py = ccy + r * Math.sin(ang), pz = sz + zStep * (s + 1);
             if (isNaN(px) || isNaN(py) || isNaN(pz)) continue;
-            moves.push({ type: type, from: { x: cx, y: cy, z: cz }, to: { x: px, y: py, z: pz }, line: t, section: section });
+            moves.push({ type: type, from: { x: cx, y: cy, z: cz }, to: { x: px, y: py, z: pz }, line: t, section: section, sectionIndex: sectionIndex });
             cx = px; cy = py; cz = pz; track(cx, cy, cz);
           }
           continue;
         }
       }
       if (nx !== cx || ny !== cy || nz !== cz) {
-        moves.push({ type: type, from: { x: cx, y: cy, z: cz }, to: { x: nx, y: ny, z: nz }, line: t, section: section });
+        moves.push({ type: type, from: { x: cx, y: cy, z: cz }, to: { x: nx, y: ny, z: nz }, line: t, section: section, sectionIndex: sectionIndex });
         cx = nx; cy = ny; cz = nz; track(cx, cy, cz);
       }
     }
@@ -212,6 +214,8 @@
     var stockH = opts.stockHeight || 0.25;
     this.stockHeight = stockH;
     this.stockTop = (opts.stockTop !== undefined) ? opts.stockTop : stockH;
+    this.sectionColors = opts.sectionColors || null;
+    this.rapidColor = opts.rapidColor || '#6e7681';
     var stockGeo = new THREE.BoxGeometry(stockW, stockH, stockD);
     var stockMat = new THREE.MeshStandardMaterial({
       color: 0xe8f0ff, transparent: true, opacity: 0.15,
@@ -293,8 +297,31 @@
     var attr = new THREE.BufferAttribute(pos, 3);
     var g1 = new THREE.BufferGeometry(); g1.setAttribute('position', attr);
     var g2 = new THREE.BufferGeometry(); g2.setAttribute('position', attr);
-    this.upcomingLine = new THREE.Line(g1, new THREE.LineBasicMaterial({ color: 0xfdb515, opacity: 0.8, transparent: true }));
-    this.completedLine = new THREE.Line(g2, new THREE.LineBasicMaterial({ color: 0x2ea043 }));
+    if (this.sectionColors) {
+      // Vertex k ends move k-1, so it takes that move's color (vertex 0 takes the first move's).
+      var full = new Float32Array(n * 3), faded = new Float32Array(n * 3);
+      var bg = new THREE.Color(this._themeColors().bg), rapid = new THREE.Color(this.rapidColor);
+      var cache = {}, self = this;
+      var colorOf = function (m) {
+        if (m.type === 'G0') return rapid;
+        var key = m.sectionIndex;
+        if (!cache[key]) cache[key] = new THREE.Color(self.sectionColors[key] || '#fdb515');
+        return cache[key];
+      };
+      for (var v = 0; v < n; v++) {
+        var c = colorOf(this.moves[Math.max(0, v - 1)]);
+        full[v * 3] = c.r; full[v * 3 + 1] = c.g; full[v * 3 + 2] = c.b;
+        var f = c.clone().lerp(bg, 0.6);
+        faded[v * 3] = f.r; faded[v * 3 + 1] = f.g; faded[v * 3 + 2] = f.b;
+      }
+      g1.setAttribute('color', new THREE.BufferAttribute(faded, 3));
+      g2.setAttribute('color', new THREE.BufferAttribute(full, 3));
+      this.upcomingLine = new THREE.Line(g1, new THREE.LineBasicMaterial({ vertexColors: true }));
+      this.completedLine = new THREE.Line(g2, new THREE.LineBasicMaterial({ vertexColors: true }));
+    } else {
+      this.upcomingLine = new THREE.Line(g1, new THREE.LineBasicMaterial({ color: 0xfdb515, opacity: 0.8, transparent: true }));
+      this.completedLine = new THREE.Line(g2, new THREE.LineBasicMaterial({ color: 0x2ea043 }));
+    }
     this.scene.add(this.upcomingLine);
     this.scene.add(this.completedLine);
   };
