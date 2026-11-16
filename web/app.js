@@ -243,8 +243,8 @@ function refreshCutButton() {
   if (!show) return;
   const done = state.markedFor === res;
   els.markCut.textContent = done ? `Recorded on ${res.sheet_id}` : `Mark as cut on ${res.sheet_id}`;
-  els.markCut.disabled = done || !RosDB.user();
-  if (!done) els.cutMsg.textContent = RosDB.user() ? 'Do this after the job has run.' : 'Sign in on the Sheets screen to record cuts.';
+  els.markCut.disabled = done || !RosSheets.canEdit();
+  if (!done) els.cutMsg.textContent = RosSheets.canEdit() ? 'Do this after the job has run.' : 'Sign in on the Sheets screen to record cuts.';
 }
 RosDB.onAuthChange(refreshCutButton);
 

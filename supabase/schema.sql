@@ -6,7 +6,10 @@
 --   sheets         one row per physical sheet, keyed by the ID written on it in sharpie
 --   sheet_regions  areas of a sheet that are off limits: measured by hand ('blocked')
 --                  or recorded automatically when RosCAM cuts a part ('cut')
---   editors        emails allowed to change the inventory (everyone can view it)
+--   editors        emails allowed to change the inventory once it is locked down
+--
+-- Editing is OPEN: anyone using RosCAM can add and change sheets (no sign-in).
+-- To require sign-in later, run supabase/lock_down.sql (and set requireSignIn in web/config.js).
 --
 -- All lengths are inches, measured from the sheet's lower-left corner.
 
@@ -68,8 +71,8 @@ $$;
 revoke all on function public.is_editor() from public;
 grant execute on function public.is_editor() to anon, authenticated;
 
--- Row level security: anyone can read the inventory, only editors can change it.
--- (Anyone can create an account on a Supabase project, so being signed in is not enough.)
+-- Row level security. For now anyone can read AND change the inventory (open editing).
+-- supabase/lock_down.sql replaces the "editable" rules with editors-only ones.
 alter table public.sheets        enable row level security;
 alter table public.sheet_regions enable row level security;
 alter table public.editors       enable row level security;   -- no policies: not reachable from the web
@@ -82,18 +85,16 @@ drop policy if exists "sheet_regions editable"   on public.sheet_regions;
 create policy "sheets readable" on public.sheets
   for select to anon, authenticated using (true);
 create policy "sheets editable" on public.sheets
-  for all to authenticated using (public.is_editor()) with check (public.is_editor());
+  for all to anon, authenticated using (true) with check (true);
 create policy "sheet_regions readable" on public.sheet_regions
   for select to anon, authenticated using (true);
 create policy "sheet_regions editable" on public.sheet_regions
-  for all to authenticated using (public.is_editor()) with check (public.is_editor());
+  for all to anon, authenticated using (true) with check (true);
 
 revoke all on public.sheets, public.sheet_regions, public.editors from anon, authenticated;
-grant select on public.sheets, public.sheet_regions to anon, authenticated;
-grant insert, update, delete on public.sheets, public.sheet_regions to authenticated;
+grant select, insert, update, delete on public.sheets, public.sheet_regions to anon, authenticated;
 
--- The shared team account RosCAM signs in with. Create it under
+-- Editors used once editing is locked down (supabase/lock_down.sql). Create each one under
 -- Authentication -> Users -> Add user (same email, a password, "Auto Confirm User" ticked).
--- Add more editors the same way and list their emails here.
 insert into public.editors (email) values ('roscam@frc5572.org')
   on conflict (email) do nothing;

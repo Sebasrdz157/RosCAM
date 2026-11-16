@@ -8,7 +8,11 @@
   const S = {
     options: null, sheets: [], selected: null, loaded: false, drag: null, draft: null,
     listeners: new Set(),
+    mode: 'empty',        // right-hand panel: 'empty' | 'add' | 'edit'
+    idTouched: false,     // the user typed their own ID, so stop suggesting one
   };
+  const needSignIn = () => !!(window.ROSCAM_CONFIG && window.ROSCAM_CONFIG.requireSignIn);
+  const canEdit = () => !needSignIn() || !!RosDB.user();
   const el = {};
 
   // ---------------------------------------------------------------- helpers
@@ -18,6 +22,25 @@
   function msg(text, kind) {
     el.msg.textContent = text || '';
     el.msg.className = `sheets-msg ${kind || ''}`;
+  }
+
+  // Suggested IDs: <material code>-<thickness in thousandths>-<number>, e.g. AL-250-04.
+  const MATERIAL_CODES = { aluminum: 'AL', polycarbonate: 'PC' };
+  function thicknessCode(label) {
+    const m = String(label).match(/^(\d+)\s*\/\s*(\d+)$/);
+    const v = m ? Number(m[1]) / Number(m[2]) : Number(label);
+    return Number.isFinite(v) ? String(Math.round(v * 1000)).padStart(3, '0') : String(label).replace(/\W/g, '');
+  }
+  function suggestId(material, thickness) {
+    const code = MATERIAL_CODES[material] || material.slice(0, 2).toUpperCase();
+    const prefix = `${code}-${thicknessCode(thickness)}-`;
+    let max = 0;
+    for (const s of S.sheets) {
+      if (!s.id.toUpperCase().startsWith(prefix)) continue;
+      const n = parseInt(s.id.slice(prefix.length), 10);
+      if (Number.isFinite(n)) max = Math.max(max, n);
+    }
+    return prefix + String(max + 1).padStart(2, '0');
   }
 
   // Fraction of the sheet still free, estimated on a 0.5" grid (good enough for a label).
@@ -122,10 +145,35 @@
   // ---------------------------------------------------------------- account
   function renderAccount() {
     const u = RosDB.user();
+    show(el.account, needSignIn());
     show(el.signinForm, !u);
     show(el.signedIn, !!u);
     el.who.textContent = u ? u.email : '';
-    document.querySelectorAll('.needs-editor').forEach((n) => { n.disabled = !u; });
+    document.querySelectorAll('.needs-editor').forEach((n) => { n.disabled = !canEdit(); });
+  }
+
+  // ---------------------------------------------------------------- right-hand panel
+  function setMode(mode) {
+    S.mode = mode;
+    show(el.panelEmpty, mode === 'empty');
+    show(el.addForm, mode === 'add');
+    show(el.editor, mode === 'edit');
+    if (mode !== 'edit') { S.selected = null; renderList(); }
+    if (mode === 'add') {
+      S.idTouched = false;
+      if (el.fMaterial.value) { el.aMaterial.value = el.fMaterial.value; el.aMaterial.dispatchEvent(new Event('change')); }
+      if (el.fThickness.value && [...el.aThickness.options].some((o) => o.value === el.fThickness.value)) {
+        el.aThickness.value = el.fThickness.value;
+      }
+      refreshSuggestedId();
+      el.aMaterial.focus();
+    }
+    if (window.matchMedia('(max-width: 640px)').matches && mode !== 'empty') {
+      el.panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+  function refreshSuggestedId() {
+    if (!S.idTouched) el.aId.value = suggestId(el.aMaterial.value, el.aThickness.value);
   }
 
   // ---------------------------------------------------------------- list
@@ -133,7 +181,8 @@
     const mat = el.fMaterial.value, thk = el.fThickness.value, showUsed = el.fUsed.checked;
     const list = S.sheets.filter((s) => (!mat || s.material === mat) && (!thk || s.thickness === thk)
                                       && (showUsed || s.status === 'active'));
-    el.count.textContent = S.loaded ? `${list.length} sheet${list.length === 1 ? '' : 's'}` : '';
+    el.count.textContent = S.loaded && S.sheets.length
+      ? `Showing ${list.length} of ${S.sheets.length} sheet${S.sheets.length === 1 ? '' : 's'}` : '';
     el.list.replaceChildren(...list.map((s) => {
       const card = document.createElement('button');
       card.type = 'button';
@@ -153,18 +202,20 @@
       });
       info.append(id, meta, freeEl);
       card.append(canvas, info);
-      card.addEventListener('click', () => { S.selected = s; S.draft = null; renderList(); renderEditor(); });
+      card.addEventListener('click', () => { S.selected = s; S.draft = null; setMode('edit'); renderList(); renderEditor(); });
       requestAnimationFrame(() => drawSheet(prepCanvas(canvas, 60, 110), s, 60, 110, { pad: 4, origin: false }));
       return card;
     }));
+    el.empty.textContent = S.sheets.length
+      ? 'No sheets match. Change "Show only" above, or tick "Include used-up sheets".'
+      : 'No sheets yet. Click "+ Add a sheet" to add the first one.';
     show(el.empty, S.loaded && list.length === 0);
   }
 
   // ---------------------------------------------------------------- editor
   function renderEditor() {
     const s = S.selected;
-    show(el.editor, !!s);
-    if (!s) return;
+    if (!s) { if (S.mode === 'edit') setMode('empty'); return; }
     el.edTitle.textContent = s.id;
     el.edMeta.textContent = `${matName(s.material)}, ${s.thickness}" thick, ${fmt(s.width)}" x ${fmt(s.height)}"`;
     el.edStatus.value = s.status;
@@ -182,7 +233,7 @@
       const del = Object.assign(document.createElement('button'), {
         type: 'button', className: 'btn small needs-editor', textContent: 'Remove',
       });
-      del.disabled = !RosDB.user();
+      del.disabled = !canEdit();
       del.addEventListener('click', () => {
         if (confirm(`Remove this area from ${s.id}? It will count as free stock again.`)) {
           guarded(() => RosDB.deleteRegion(r.id), 'Area removed.');
@@ -269,7 +320,8 @@
   function init(options) {
     S.options = options;
     Object.assign(el, {
-      msg: $('sheets-msg'), signinForm: $('signin-form'), email: $('signin-email'), password: $('signin-password'),
+      msg: $('sheets-msg'), account: $('account-card'), panel: $('sheet-panel'), panelEmpty: $('panel-empty'),
+      newSheet: $('new-sheet'), addCancel: $('add-cancel'), edClose: $('ed-close'), signinForm: $('signin-form'), email: $('signin-email'), password: $('signin-password'),
       signedIn: $('signed-in'), who: $('signed-in-who'), signout: $('signout'),
       fMaterial: $('f-material'), fThickness: $('f-thickness'), fUsed: $('f-used'),
       list: $('sheet-list'), count: $('sheet-count'), empty: $('sheet-empty'),
@@ -297,7 +349,12 @@
     el.fMaterial.addEventListener('change', () => { fillThk(el.fMaterial, el.fThickness, true); renderList(); });
     el.fThickness.addEventListener('change', renderList);
     el.fUsed.addEventListener('change', renderList);
-    el.aMaterial.addEventListener('change', () => fillThk(el.aMaterial, el.aThickness, false));
+    el.aMaterial.addEventListener('change', () => { fillThk(el.aMaterial, el.aThickness, false); refreshSuggestedId(); });
+    el.aThickness.addEventListener('change', refreshSuggestedId);
+    el.aId.addEventListener('input', () => { S.idTouched = el.aId.value.trim() !== ''; });
+    el.newSheet.addEventListener('click', () => setMode('add'));
+    el.addCancel.addEventListener('click', () => setMode('empty'));
+    el.edClose.addEventListener('click', () => setMode('empty'));
 
     el.signinForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -321,8 +378,9 @@
         width: Number(el.aW.value) || 24, height: Number(el.aH.value) || 48, notes: el.aNotes.value.trim(),
       }), `Added sheet ${id}.`);
       if (ok) {
-        el.aId.value = ''; el.aNotes.value = '';
+        el.aNotes.value = '';
         S.selected = S.sheets.find((s) => s.id === id) || null;
+        setMode(S.selected ? 'edit' : 'empty');
         renderList(); renderEditor();
       }
     });
@@ -339,7 +397,7 @@
     el.edDelete.addEventListener('click', () => {
       const s = S.selected;
       if (!confirm(`Delete sheet ${s.id} and all of its recorded areas? This cannot be undone.`)) return;
-      guarded(() => RosDB.deleteSheet(s.id), `Deleted ${s.id}.`).then((ok) => { if (ok) { S.selected = null; renderEditor(); } });
+      guarded(() => RosDB.deleteSheet(s.id), `Deleted ${s.id}.`).then((ok) => { if (ok) setMode('empty'); });
     });
     el.regionForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -351,14 +409,16 @@
       if (ok) { S.draft = null; el.regionForm.reset(); drawEditor(); }
     });
 
+    fillThk(el.aMaterial, el.aThickness, false);
     bindEditorCanvas();
+    setMode('empty');
     window.addEventListener('resize', () => drawEditor());
     renderAccount();
     reload(false);
   }
 
   window.RosSheets = {
-    init, reload, drawSheet, prepCanvas, freeFraction,
+    init, reload, drawSheet, prepCanvas, freeFraction, canEdit, suggestId,
     sheets: () => S.sheets,
     get: (id) => S.sheets.find((s) => s.id === id) || null,
     onChange(fn) { S.listeners.add(fn); },
