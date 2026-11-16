@@ -84,8 +84,8 @@ self.onmessage = async (event) => {
       const placements = pyodide.toPy(args.placements);
       const overrides = pyodide.toPy(args.overrides || {});
       const unplaced = pyodide.toPy(args.unplaced || []);
-      result = toJs(roscam.web_generate_sheet(files, args.material, args.thickness, sheet, placements,
-                                              overrides, unplaced));
+      result = toJs(roscam.web_generate_sheet.callKwargs(files, args.material, args.thickness, sheet, placements,
+                                                         overrides, unplaced, { job_name: args.jobName || null }));
       for (const p of [files, sheet, placements, overrides, unplaced]) p.destroy();
     } else {
       throw new Error(`Unknown request ${type}`);

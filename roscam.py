@@ -1401,7 +1401,7 @@ def web_nest_setup(sheet: dict, cfg: Optional[ShopConfig] = None) -> dict:
 
 def web_generate_sheet(files: list, material: str, thickness: str, sheet: dict, placements: list,
                        overrides: Optional[Dict[str, str]] = None, unplaced: Optional[list] = None,
-                       cfg: Optional[ShopConfig] = None) -> dict:
+                       cfg: Optional[ShopConfig] = None, job_name: Optional[str] = None) -> dict:
     """Programs for a nested layout. files: [{'name', 'bytes'}] in part-index order."""
     import base64
     import tempfile
@@ -1414,7 +1414,8 @@ def web_generate_sheet(files: list, material: str, thickness: str, sheet: dict, 
             parts.append(PartFile(path, sanitize_filename_base(str(f['name']), f'part{i + 1}')))
         try:
             res = generate_sheet_job(parts, [dict(p) for p in placements], material, thickness,
-                                     Sheet.from_dict(sheet), cfg, overrides or {}, list(unplaced or []))
+                                     Sheet.from_dict(sheet), cfg, overrides or {}, list(unplaced or []),
+                                     job_name=job_name)
         except Exception as e:
             return {'success': False, 'part_name': 'job', 'errors': [f'Could not make programs: {e}'],
                     'warnings': [], 'hole_groups': [], 'programs': [], 'setup_sheet': '', 'parts': []}

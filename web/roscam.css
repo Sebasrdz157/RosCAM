@@ -214,6 +214,18 @@ input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 #preview.draggable { cursor: grab; touch-action: none; }
 #preview.dragging { cursor: grabbing; }
 
+/* Preview zoom, one-part download, picking what was cut */
+.zoom-bar { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+#preview { cursor: grab; touch-action: none; }
+#preview.dragging { cursor: grabbing; }
+.one-part select { max-width: 260px; }
+.cut-pick { display: flex; flex-direction: column; gap: 10px; }
+.cut-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; }
+.cut-list label { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+.cut-list input { accent-color: var(--accent); }
+.cut-list .done { color: var(--muted); }
+.legend .rapid::before { background: #6e7681; }
+
 /* Simulation */
 .sim-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; }
 .field.inline { flex-direction: row; align-items: center; gap: 6px; }

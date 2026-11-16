@@ -87,18 +87,37 @@
       <div id="preview-wrap" class="block hidden">
         <h2>Preview</h2>
         <div class="legend" id="legend"></div>
+        <div class="zoom-bar">
+          <button id="zoom-in" class="btn small" type="button" aria-label="Zoom in">+</button>
+          <button id="zoom-out" class="btn small" type="button" aria-label="Zoom out">&minus;</button>
+          <button id="zoom-fit" class="btn small" type="button">Fit</button>
+          <span class="hint">Scroll or pinch to zoom, drag to move around.</span>
+        </div>
         <canvas id="preview" role="img" aria-label="Toolpath preview"></canvas>
         <p class="hint" id="stock-note"></p>
         <div id="cut-actions" class="actions hidden">
           <button id="mark-cut" class="btn needs-editor" type="button">Mark as cut on sheet</button>
           <span id="cut-msg" class="hint"></span>
         </div>
+        <div id="cut-pick" class="cut-pick card hidden">
+          <p class="hint">Tick the parts that were actually cut. Their areas become off limits on the sheet.</p>
+          <div class="actions">
+            <button id="cut-all" class="btn small" type="button">Tick all</button>
+            <button id="cut-none" class="btn small" type="button">Untick all</button>
+          </div>
+          <div id="cut-list" class="cut-list"></div>
+          <div class="actions">
+            <button id="cut-save" class="btn primary" type="button">Record ticked parts</button>
+            <button id="cut-cancel" class="btn" type="button">Cancel</button>
+          </div>
+        </div>
       </div>
 
       <div id="sim-wrap" class="block hidden">
         <h2>Simulation</h2>
-        <p class="hint">The path the router takes. Green is cut, gold is still to come. Drag to rotate,
-          scroll to zoom, middle-drag to pan.</p>
+        <p class="hint">The path the router takes, one color per bit (warm colors drill, cool colors mill).
+          Bright is already cut, faded is still to come, grey lines are rapid moves. Drag to rotate, scroll to
+          zoom, middle-drag to pan.</p>
         <div class="sim-bar">
           <label class="field inline">
             <span>Show</span>
@@ -117,6 +136,7 @@
           </label>
           <button id="sim-reset" class="btn" type="button">Reset view</button>
         </div>
+        <div id="sim-legend" class="legend"></div>
         <div id="sim-stage" class="sim-stage">
           <canvas id="sim-canvas" aria-label="3D toolpath simulation"></canvas>
           <p id="sim-fallback" class="sim-fallback hidden"></p>
@@ -134,6 +154,12 @@
         <div class="actions">
           <button id="zip" class="btn primary" type="button">Download all (.zip)</button>
         </div>
+        <div class="actions one-part">
+          <label class="field inline"><span>Or just one part</span><select id="one-part"></select></label>
+          <button id="one-part-zip" class="btn" type="button">Download that part (.zip)</button>
+          <span id="one-part-msg" class="hint"></span>
+        </div>
+        <p class="hint">"Just one part" makes programs for that part alone, in the same spot on the sheet.</p>
         <p class="hint">Convert each <code>.nc</code> file with the Converter before running it, and dry-run above the stock
           if anything looks unfamiliar.</p>
       </div>
