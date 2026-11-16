@@ -39,6 +39,21 @@ uv run python web/build.py              # assemble dist/
 python -m http.server -d dist 8000      # open http://localhost:8000
 ```
 
+## Nesting several parts on a sheet
+
+On **Make programs**, drop in several DXFs, set how many of each, and pick a sheet. RosCAM
+arranges them on the sheet clear of its used areas (parts may be turned in 90 degree steps,
+or kept as drawn), packing toward the bottom so the leftover stays in one piece. The search
+runs for up to 20 seconds with live progress; **Stop** keeps the best layout so far and
+**Try for a better layout** searches again (keeping the old layout if it was better). Parts
+that don't fit are listed so they can go on another sheet.
+
+The nesting engine (`web/nest/`) is adapted from [SVGnest](https://github.com/Jack000/SVGnest)
+(MIT, Jack Qiao): its genetic algorithm and no-fit-polygon placement, with used areas as fixed
+obstacles. `roscam.generate_sheet_job` re-checks every layout (edges, used areas, spacing)
+before writing programs: each drill program covers every copy, and the end mill cuts every
+copy's holes and pockets before any outline.
+
 ## Sheet inventory (Supabase)
 
 The **Sheets** screen keeps track of every sheet of stock by the ID written on it, and the
