@@ -39,7 +39,7 @@ const state = {
 };
 
 // ---- CAM worker (Python) ---------------------------------------------------------
-const worker = new Worker('worker.js');
+const worker = new Worker('worker.js?v=dev');
 let nextId = 1;
 const pending = new Map();
 worker.onmessage = (e) => {
@@ -47,6 +47,11 @@ worker.onmessage = (e) => {
   const p = pending.get(id);
   if (!p) return;
   pending.delete(id);
+  // An old cached worker.js doesn't know newer requests: say what to do about it.
+  if (!ok && /^Unknown request/.test(error)) {
+    p.reject(new Error('RosCAM was updated and this browser still has part of the old version. Reload the page (Ctrl+Shift+R).'));
+    return;
+  }
   ok ? p.resolve(result) : p.reject(new Error(error));
 };
 // If the worker itself dies (e.g. the Pyodide CDN is unreachable), fail every waiting
@@ -66,7 +71,7 @@ function call(type, args) {
 }
 
 // ---- nesting worker (adapted from SVGnest) ------------------------------------------
-const nestWorker = new Worker('nest/nest-worker.js');
+const nestWorker = new Worker('nest/nest-worker.js?v=dev');
 nestWorker.onmessage = (e) => {
   let m = e.data;
   if (m.run !== state.nestRun) return;            // an older search

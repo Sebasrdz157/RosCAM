@@ -33,7 +33,7 @@ async function boot() {
   const dir = '/home/pyodide/roscam';
   pyodide.FS.mkdirTree(dir);
   for (const name of PY_FILES) {
-    const res = await fetch(`py/${name}`, { cache: 'no-cache' });
+    const res = await fetch(`py/${name}?v=dev`, { cache: 'no-cache' });
     if (!res.ok) throw new Error(`Could not load ${name} (${res.status})`);
     pyodide.FS.writeFile(`${dir}/${name}`, await res.text());
   }

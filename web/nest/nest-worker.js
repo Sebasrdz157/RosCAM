@@ -4,7 +4,7 @@
 // Messages out: {type: 'progress', best, generation, evaluated, utilization}  (on every improvement)
 //               {type: 'done', best, generation, evaluated, utilization, reason}
 'use strict';
-importScripts('clipper.js', 'geometryutil.js', 'nester.js');
+importScripts('clipper.js?v=dev', 'geometryutil.js?v=dev', 'nester.js?v=dev');
 
 let nester = null;
 let running = false;
