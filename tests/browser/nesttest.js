@@ -138,13 +138,15 @@ async function fakeSupabase(route) {
   await one.saveAs(`${S}/one_part.zip`);
   console.log('one part:', one.suggestedFilename(), '|', await page.textContent('#one-part-msg'));
 
-  // mark as cut: only the one part is pre-ticked
-  await page.click('#mark-cut');
-  const ticked = await page.$$eval('#cut-list input', (l) => l.filter((b) => b.checked).length);
+  // mark as cut from the one-part shortcut: only that part is pre-ticked
+  console.log('one-part cut button:', await page.textContent('#one-part-cut'));
+  await page.click('#one-part-cut');
+  const ticked = await page.$$eval('#cut-list input', (l) => l.filter((b) => b.checked).map((b) => b.parentNode.textContent.trim()));
   await page.click('#cut-save');
   await page.waitForFunction(() => /Saved/.test(document.querySelector('#cut-msg').textContent), null, { timeout: 30000 });
   console.log('pre-ticked:', ticked, '|', await page.textContent('#cut-msg'), '| button:', await page.textContent('#mark-cut'),
               '| cut regions:', db.regions.filter((r) => r.kind === 'cut').length);
+  console.log('one-part cut button after:', await page.textContent('#one-part-cut'), 'disabled =', await page.isDisabled('#one-part-cut'));
   await page.click('#mark-cut'); await page.click('#cut-all'); await page.click('#cut-save');
   await page.waitForFunction(() => /^All recorded/.test(document.querySelector('#mark-cut').textContent), null, { timeout: 30000 });
   console.log('after all:', await page.textContent('#mark-cut'), '| cut regions:', db.regions.filter((r) => r.kind === 'cut').length);
