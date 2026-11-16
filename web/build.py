@@ -116,8 +116,8 @@ def export_to_partstracker(checkout):
     if os.path.isdir(dest):
         shutil.rmtree(dest)
     shutil.copytree(dist, dest)
-    if os.path.exists(os.path.join(ROOT, 'LICENSE')):     # MIT (PenguinCAM + RosCAM): travels with the code
-        shutil.copy2(os.path.join(ROOT, 'LICENSE'), os.path.join(dest, 'LICENSE-RosCAM.txt'))
+    if os.path.exists(os.path.join(ROOT, 'LICENSE.txt')):     # MIT (PenguinCAM + RosCAM): travels with the code
+        shutil.copy2(os.path.join(ROOT, 'LICENSE.txt'), os.path.join(dest, 'LICENSE-RosCAM.txt'))
     files = sorted(os.path.relpath(os.path.join(d, f), dest).replace(os.sep, '/')
                    for d, _, fs in os.walk(dest) for f in fs)
     unknown = [f for f in files if os.path.splitext(f)[1] not in MIME]
