@@ -97,11 +97,11 @@
     this.renderer.setSize(w, h);
   };
 
-  // Background/grid colors that follow the page theme (light/dark).
+  // Background colors that follow the page theme (light/dark).
   GcodeViewer.prototype._themeColors = function () {
     var light = document.documentElement.getAttribute('data-theme') === 'light';
-    return light ? { bg: 0xf2f4f7, grid1: 0xc7cfd8, grid2: 0xdde3ea }
-                 : { bg: 0x0a0e14, grid1: 0x30363d, grid2: 0x1e2632 };
+    return light ? { bg: 0xf2f4f7 }
+                 : { bg: 0x0a0e14 };
   };
 
   GcodeViewer.prototype.setTheme = function () {
@@ -200,10 +200,6 @@
     var tc = this._themeColors();
     this.scene.background = new THREE.Color(tc.bg);
     var maxDim = Math.max(maxX, maxY, maxZ);
-    var gridSize = Math.max(maxX * 1.3, maxY * 1.3, 15);
-    var grid = new THREE.GridHelper(gridSize, Math.ceil(gridSize), tc.grid1, tc.grid2);
-    grid.position.set(gridSize / 3, 0, -gridSize / 3);
-    this.scene.add(grid);
     this._addAxes(Math.max(maxDim, 5) * 0.6);
     var ms = Math.max(0.15, maxDim * 0.02);
     this.scene.add(new THREE.Mesh(new THREE.SphereGeometry(ms, 16, 16), new THREE.MeshBasicMaterial({ color: 0xffffff })));

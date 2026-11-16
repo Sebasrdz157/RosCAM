@@ -28,7 +28,7 @@ const els = {
   cutPick: $('cut-pick'), cutList: $('cut-list'), cutSave: $('cut-save'), cutCancel: $('cut-cancel'),
   cutAll: $('cut-all'), cutNone: $('cut-none'), simLegend: $('sim-legend'),
   zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), zoomFit: $('zoom-fit'),
-  onePart: $('one-part'), onePartZip: $('one-part-zip'), onePartMsg: $('one-part-msg'),
+  onePart: $('one-part'), onePartZip: $('one-part-zip'), onePartMsg: $('one-part-msg'), onePartCut: $('one-part-cut'),
 };
 
 const state = {
@@ -521,7 +521,22 @@ function refreshCutButton() {
     : done ? `Mark more as cut (${done} of ${n} recorded)` : `Mark as cut on ${res.sheet_id}`;
   els.markCut.disabled = done === n || !RosSheets.canEdit();
   if (!done) els.cutMsg.textContent = RosSheets.canEdit() ? 'Do this after the job has run.' : 'Sign in on the Sheets screen to record cuts.';
+  refreshOnePartCut();
 }
+
+// After a one-part download: a shortcut to record just that part as cut, in the spot it was
+// programmed for (the tick list opens with only that part ticked, so it can be confirmed).
+function refreshOnePartCut() {
+  const res = state.result, i = state.lastOnePart;
+  const show = !!(res && res.success && res.sheet_id && i !== null && res.parts[i]);
+  els.onePartCut.classList.toggle('hidden', !show);
+  if (!show) return;
+  const done = state.marked.has(i);
+  els.onePartCut.textContent = done ? `${res.parts[i].label} is recorded on ${res.sheet_id}`
+    : `Mark ${res.parts[i].label} as cut on ${res.sheet_id}`;
+  els.onePartCut.disabled = done || !RosSheets.canEdit();
+}
+els.onePartCut.addEventListener('click', () => els.markCut.click());
 RosDB.onAuthChange(refreshCutButton);
 
 els.markCut.addEventListener('click', () => {
@@ -658,6 +673,7 @@ function zipBlob(b64) {
 function fillOnePart(res) {
   els.onePart.replaceChildren(...res.parts.map((p, i) => new Option(p.label, String(i))));
   els.onePartMsg.textContent = '';
+  els.onePartCut.classList.add('hidden');
 }
 
 els.onePartZip.addEventListener('click', async () => {
@@ -678,7 +694,9 @@ els.onePartZip.addEventListener('click', async () => {
     if (!one.success) throw new Error(one.errors.join(' '));
     download(zipBlob(one.zip_base64), one.zip_name);
     state.lastOnePart = i;
-    els.onePartMsg.textContent = `Downloaded ${label} only (${one.programs.length} program${one.programs.length === 1 ? '' : 's'}).`;
+    els.onePartMsg.textContent = `Downloaded ${label} only (${one.programs.length} program${one.programs.length === 1 ? '' : 's'}). `
+      + 'Once it has been cut, record it on the sheet:';
+    refreshOnePartCut();
   } catch (err) {
     els.onePartMsg.textContent = `Could not make it: ${err.message}`;
   }
