@@ -16,7 +16,22 @@
   const el = {};
 
   // ---------------------------------------------------------------- helpers
-  const fmt = (n) => (Math.round(n * 1000) / 1000).toString();
+  // Lengths are shown with up to 6 decimals (1/64" = 0.015625) and no trailing zeros.
+  const fmt = (n) => (Math.round(n * 1e6) / 1e6).toString();
+
+  // Read a length in inches: "3.015625", "3 1/64", "3-1/64", "1/64", optional trailing " or in.
+  function parseInches(text) {
+    const t = String(text).trim().replace(/\s*(in(ch(es)?)?|")$/i, '');
+    if (!t) return NaN;
+    let m = t.match(/^(-?\d+(?:\.\d+)?)$|^(-?\.\d+)$/);
+    if (m) return Number(t);
+    m = t.match(/^(-?)(?:(\d+)[\s-]+)?(\d+)\s*\/\s*(\d+)$/);
+    if (m && Number(m[4]) !== 0) {
+      const v = (m[2] ? Number(m[2]) : 0) + Number(m[3]) / Number(m[4]);
+      return m[1] ? -v : v;
+    }
+    return NaN;
+  }
   const matName = (id) => (S.options.materials.find((m) => m.id === id) || { name: id }).name;
   function show(node, on) { node.classList.toggle('hidden', !on); }
   function msg(text, kind) {
@@ -304,9 +319,10 @@
   }
 
   function readRegionForm() {
-    const vals = [el.rx, el.ry, el.rw, el.rh].map((i) => Number(i.value));
+    const vals = [el.rx, el.ry, el.rw, el.rh].map((i) => parseInches(i.value));
     if (vals.some((v) => !Number.isFinite(v)) || vals[2] <= 0 || vals[3] <= 0) {
-      throw new Error('Enter X, Y, width and height in inches (width and height above 0).');
+      throw new Error('Enter X, Y, width and height in inches, as decimals (3.015625) or fractions (3 1/64). '
+                      + 'Width and height must be above 0.');
     }
     const [x, y, w, h] = vals;
     const s = S.selected;
@@ -375,7 +391,7 @@
       if (!id) { msg('Enter the ID written on the sheet.', 'err'); return; }
       const ok = await guarded(() => RosDB.addSheet({
         id, material: el.aMaterial.value, thickness: el.aThickness.value,
-        width: Number(el.aW.value) || 24, height: Number(el.aH.value) || 48, notes: el.aNotes.value.trim(),
+        width: parseInches(el.aW.value) || 24, height: parseInches(el.aH.value) || 48, notes: el.aNotes.value.trim(),
       }), `Added sheet ${id}.`);
       if (ok) {
         el.aNotes.value = '';
@@ -418,7 +434,7 @@
   }
 
   window.RosSheets = {
-    init, reload, drawSheet, prepCanvas, freeFraction, canEdit, suggestId,
+    init, reload, drawSheet, prepCanvas, freeFraction, canEdit, suggestId, parseInches, fmt,
     sheets: () => S.sheets,
     get: (id) => S.sheets.find((s) => s.id === id) || null,
     onChange(fn) { S.listeners.add(fn); },

@@ -197,8 +197,8 @@
               <label class="field"><span>Material</span><select id="a-material"></select></label>
               <label class="field"><span>Thickness</span><select id="a-thickness"></select></label>
               <label class="field"><span>ID on the sheet</span><input id="a-id" maxlength="40" required></label>
-              <label class="field"><span>Width (X), in</span><input id="a-width" type="number" step="0.01" min="1" value="24"></label>
-              <label class="field"><span>Height (Y), in</span><input id="a-height" type="number" step="0.01" min="1" value="48"></label>
+              <label class="field"><span>Width (X), in</span><input id="a-width" type="text" inputmode="decimal" autocomplete="off" value="24"></label>
+              <label class="field"><span>Height (Y), in</span><input id="a-height" type="text" inputmode="decimal" autocomplete="off" value="48"></label>
               <label class="field wide"><span>Notes (optional)</span><input id="a-notes" maxlength="200" placeholder="Where it's stored, scratches..."></label>
             </div>
             <div class="actions">
@@ -220,12 +220,13 @@
               <span class="swatch cut"></span> parts RosCAM recorded as cut</p>
 
             <h3>Mark an area as used</h3>
-            <p class="hint">Measure from the sheet's lower-left corner, or drag a box on the drawing above to fill these in.</p>
+            <p class="hint">Measure from the sheet's lower-left corner, or drag a box on the drawing above to fill these in.
+              Inches, as decimals (up to 6 places) or fractions: <code>3.015625</code>, <code>3 1/64</code>, <code>3-1/64</code>.</p>
             <form id="add-region" class="form-grid">
-              <label class="field"><span>X, in</span><input id="r-x" type="number" step="0.01" required></label>
-              <label class="field"><span>Y, in</span><input id="r-y" type="number" step="0.01" required></label>
-              <label class="field"><span>Width, in</span><input id="r-w" type="number" step="0.01" min="0" required></label>
-              <label class="field"><span>Height, in</span><input id="r-h" type="number" step="0.01" min="0" required></label>
+              <label class="field"><span>X, in</span><input id="r-x" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 3.015625 or 3 1/64" required></label>
+              <label class="field"><span>Y, in</span><input id="r-y" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 3.015625 or 3 1/64" required></label>
+              <label class="field"><span>Width, in</span><input id="r-w" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 3.015625 or 3 1/64" required></label>
+              <label class="field"><span>Height, in</span><input id="r-h" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 3.015625 or 3 1/64" required></label>
               <label class="field wide"><span>Label (optional)</span><input id="r-label" maxlength="60" placeholder="Old cut, crack..."></label>
               <button class="btn primary needs-editor" type="submit">Mark as used</button>
             </form>
