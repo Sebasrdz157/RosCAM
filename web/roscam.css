@@ -58,9 +58,10 @@ code { font-family: var(--mono); font-size: .95em; color: var(--text); }
 }
 .brand { display: flex; align-items: center; gap: 10px; flex: none; }
 .brand h1 { font-size: 16px; font-weight: 700; letter-spacing: .01em; }
-.brand-mark {
-  width: 18px; height: 18px; border-radius: 3px; background: var(--accent);
-  clip-path: polygon(0 0, 70% 0, 100% 30%, 100% 100%, 0 100%);
+.brand-logo {
+  width: 32px; height: 32px; flex: none;
+  /* the gear is black: a thin light edge keeps its outline visible on the dark bar */
+  filter: drop-shadow(0 0 .6px rgba(230, 232, 238, .9)) drop-shadow(0 0 .6px rgba(230, 232, 238, .6));
 }
 .views { display: flex; gap: var(--s1); }
 .view-tab {
