@@ -29,5 +29,5 @@ node tests/browser/nesttest.js $S      # nesting, programs, zoom, one-part downl
 node tests/browser/toolstest.js $S     # Tools screen + a rack that needs a 1/8" end mill
 node tests/browser/sheettest.js $S     # Sheets screen
 node tests/browser/simtest.js $S       # 3D simulation
-node tests/browser/pyodide_repro.js    # browser Python engine in node (crash reproduction)
+node tests/browser/pyodide_repro.js $S # browser Python engine in node (crash reproduction)
 ```
