@@ -154,6 +154,7 @@ class ShopConfig:
     materials: Dict[str, Material]
     tabs_enabled: bool = True
     remove_tabs: bool = False
+    cut_gap: float = 0.25        # solid material left between any two cuts (see setup.cut_gap)
 
     @property
     def profile_tool(self) -> Tool:
@@ -270,7 +271,10 @@ def load_config(path: Optional[str] = None, data: Optional[dict] = None) -> Shop
         materials=materials,
         tabs_enabled=bool(tabs.get('enabled', True)),
         remove_tabs=bool(tabs.get('remove_tabs', False)),
+        cut_gap=_length(s.get('cut_gap', 0.25), 'setup cut_gap'),
     )
+    if cfg.cut_gap < 0:
+        raise ValueError('setup.cut_gap cannot be negative')
     if cfg.stock_margin <= cfg.profile_tool.diameter / 2:
         raise ValueError(f'setup.stock_margin ({cfg.stock_margin}") must be larger than the '
                          f'profile tool radius ({cfg.profile_tool.diameter / 2}")')
@@ -801,8 +805,12 @@ def _route(pp: FRCPostProcessor, centers: List[Tuple[float, float]]) -> List[Tup
 # Sheets: placing a part on a partly used sheet
 # =============================================================================
 
-# Gap kept between the cutter's edge and anything off limits (used areas, sheet edges).
-SHEET_CLEARANCE = 0.125
+# Spacing on a sheet. The end mill cuts a slot one cutter DIAMETER wide outside every
+# outline, so a part needs outline + diameter + cfg.cut_gap of room: the gap is solid
+# material left between that slot and anything else (another part's slot, the sheet edge,
+# a used area), so tabs always have something to hold on to.
+def _slot_width(endmill: 'Tool') -> float:
+    return endmill.diameter
 # Grid the automatic placement searches on.
 PLACEMENT_STEP = 0.25
 
@@ -870,7 +878,7 @@ def place_on_sheet(footprint, sheet: Sheet, cfg: ShopConfig,
         moved = affinity.translate(footprint, dx, dy)
         if not usable.contains(moved):
             return None, (f'The part does not fit on sheet {sheet.id} there: it needs '
-                          f'{SHEET_CLEARANCE:g}" of clearance from the sheet edge.')
+                          f'{cfg.cut_gap:g}" of solid material between its cut and the sheet edge.')
         if blocked is not None and moved.intersection(blocked).area >= 1e-6:
             return None, f'That spot overlaps an area of sheet {sheet.id} that is already used.'
         return (dx, dy), None
@@ -939,7 +947,7 @@ def generate_job(dxf_path: str, material: str, thickness, cfg: Optional[ShopConf
         if outline is None:
             result.errors.append('Could not find the outline of this part.')
             return result
-        footprint = outline.buffer(endmill.diameter / 2 + SHEET_CLEARANCE)
+        footprint = outline.buffer(_slot_width(endmill) + cfg.cut_gap)
         offset, why = place_on_sheet(footprint, sheet, cfg, placement)
         result.sheet_id = sheet.id
         result.stock_size = (sheet.width, sheet.height)
@@ -951,7 +959,7 @@ def generate_job(dxf_path: str, material: str, thickness, cfg: Optional[ShopConf
         pp.transform_coordinates('bottom-left', 0, placement_offset=offset, enforce_bounds=False)
         result.placement = offset
         result.footprint = _coords(affinity.translate(footprint, *offset))
-        result.cut_region = _coords(affinity.translate(outline.buffer(endmill.diameter / 2), *offset))
+        result.cut_region = _coords(affinity.translate(outline.buffer(_slot_width(endmill)), *offset))
 
     # The outer boundary may itself be a circle (a round part); it isn't a hole.
     all_circles = list(pp.circles)
@@ -1114,7 +1122,7 @@ def _hole_circles(pp: FRCPostProcessor):
 
 def part_info(path: str, name: str, material: str, thickness, cfg: Optional[ShopConfig] = None) -> dict:
     """What the nesting step needs to know about one part: its outline, the shape it may
-    not overlap with others (outline + cutter + half the clearance), and its holes."""
+    not overlap with others (outline + the cut's slot + half the cut gap), and its holes."""
     cfg = cfg or load_config()
     out = {'name': name, 'errors': [], 'warnings': [], 'hole_groups': [], 'outline': [], 'nest_shape': [],
            'width': 0.0, 'height': 0.0}
@@ -1136,7 +1144,7 @@ def part_info(path: str, name: str, material: str, thickness, cfg: Optional[Shop
         return out
     _, holes = _hole_circles(pp)
     groups, errs, warns = plan_holes(holes, cfg, {})
-    shape = outline.buffer(endmill.diameter / 2 + SHEET_CLEARANCE / 2 + NEST_TOLERANCE, 16)
+    shape = outline.buffer(_slot_width(endmill) + cfg.cut_gap / 2 + NEST_TOLERANCE, 16)
     shape = shape.simplify(NEST_TOLERANCE, preserve_topology=True)
     minx, miny, maxx, maxy = outline.bounds
     out.update(outline=_coords(outline, 0.002), nest_shape=_coords(shape, 0.0),
@@ -1148,11 +1156,11 @@ def part_info(path: str, name: str, material: str, thickness, cfg: Optional[Shop
 
 def nest_setup(sheet: Sheet, cfg: Optional[ShopConfig] = None) -> dict:
     """The sheet as the nesting step sees it: the rectangle a part's nesting shape must stay
-    inside, and the used areas it must stay out of. Nesting shapes are outline + cutter
-    radius + half the clearance, so the sheet edge and used areas get the other half here,
-    giving the same clearances generate_sheet_job checks."""
+    inside, and the used areas it must stay out of. Nesting shapes are outline + slot + half
+    the cut gap, so the sheet edge and used areas get the other half here, giving the same
+    spacing generate_sheet_job checks."""
     cfg = cfg or load_config()
-    half = SHEET_CLEARANCE / 2 + NEST_TOLERANCE
+    half = cfg.cut_gap / 2 + NEST_TOLERANCE
     w, h = min(sheet.width, cfg.x_max), min(sheet.height, cfg.y_max)
     bin_rect = [[half, half], [w - half, half], [w - half, h - half], [half, h - half]]
     obstacles = []
@@ -1188,7 +1196,8 @@ def generate_sheet_job(parts: List[PartFile], placements: List[dict], material: 
         return result
     result.material, result.thickness_label, result.thickness = mat.name, thk.label, thk.value
     endmill = mat.tool(cfg.profile_tool)
-    r = endmill.diameter / 2
+    slot = _slot_width(endmill)
+    gap = cfg.cut_gap
     if not placements:
         result.errors.append('No parts are placed on the sheet.')
         return result
@@ -1236,16 +1245,18 @@ def generate_sheet_job(parts: List[PartFile], placements: List[dict], material: 
 
     # Safety net: re-check the whole layout, whatever produced it.
     for label, pp, outline in copies:
-        need = outline.buffer(r + SHEET_CLEARANCE)
+        need = outline.buffer(slot + gap)
         if not usable.contains(need):
-            result.errors.append(f'{label} is too close to the edge of sheet {sheet.id} (or off it).')
+            result.errors.append(f'{label} is too close to the edge of sheet {sheet.id} (or off it): its cut needs '
+                                 f'{gap:g}" of solid material before the edge.')
         if blocked is not None and need.intersection(blocked).area > 1e-6:
             result.errors.append(f'{label} overlaps an area of sheet {sheet.id} that is already used.')
-    spaced = [outline.buffer(r + SHEET_CLEARANCE / 2) for _, _, outline in copies]
+    spaced = [outline.buffer(slot + gap / 2) for _, _, outline in copies]
     for i in range(len(copies)):
         for j in range(i + 1, len(copies)):
             if spaced[i].intersection(spaced[j]).area > 1e-6:
-                result.errors.append(f'{copies[i][0]} and {copies[j][0]} are too close together.')
+                result.errors.append(f'{copies[i][0]} and {copies[j][0]} are too close together: their cuts need '
+                                     f'{gap:g}" of solid material between them.')
     if result.errors:
         return result
 
@@ -1318,8 +1329,8 @@ def generate_sheet_job(parts: List[PartFile], placements: List[dict], material: 
         result.parts.append({
             'label': label, 'x': float(pl['x']), 'y': float(pl['y']), 'rotation': int(pl.get('rotation', 0)) % 360,
             'outline': [list(p) for p in _coords(outline)],
-            'footprint': [list(p) for p in _coords(outline.buffer(r + SHEET_CLEARANCE / 2))],
-            'cut_region': [list(p) for p in _coords(outline.buffer(r))],
+            'footprint': [list(p) for p in _coords(outline.buffer(slot + gap / 2))],
+            'cut_region': [list(p) for p in _coords(outline.buffer(slot))],
         })
     result.setup_sheet = build_setup_sheet(result, cfg, timestamp)
     result.success = not result.errors

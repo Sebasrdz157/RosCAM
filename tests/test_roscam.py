@@ -14,7 +14,7 @@ import zipfile
 
 import ezdxf
 import yaml
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 
 import roscam
 from tests.fixtures.make_roscam_plate import build as build_plate
@@ -395,15 +395,15 @@ class SheetTests(unittest.TestCase):
     def test_empty_sheet_places_bottom_left(self):
         res = self._job(roscam.Sheet('AL-1', 24, 48))
         self.assertTrue(res.success, res.errors)
-        # cutter radius + clearance from the sheet corner
-        self.assertEqual(res.placement, (0.25, 0.25))
+        # the 1/4" slot + 1/4" of solid material from the sheet corner
+        self.assertEqual(res.placement, (0.5, 0.5))
         self.assertEqual(res.stock_size, (24, 48))
         self.assertEqual(res.sheet_id, 'AL-1')
         self.assertIn('Sheet AL-1', res.programs[0].gcode)
         self.assertIn('lower-left corner of sheet', res.programs[0].gcode)
         self.assertIn('LOWER-LEFT corner of the SHEET', res.setup_sheet)
         st = _cutting_stats(res.programs[-1].gcode)
-        self.assertAlmostEqual(st.x_min, 0.125, places=3)  # cutter edge clears the sheet edge
+        self.assertAlmostEqual(st.x_min, 0.375, places=3)  # cutter edge leaves the cut gap to the sheet edge
 
     def test_avoids_used_areas(self):
         used = [[(0, 0), (24, 0), (24, 10), (0, 10)],        # bottom strip used
@@ -419,7 +419,7 @@ class SheetTests(unittest.TestCase):
             st = _cutting_stats(p.gcode)
             self.assertGreaterEqual(st.y_min, 10.0)
         cut = Polygon(res.cut_region)
-        self.assertAlmostEqual(cut.bounds[2] - cut.bounds[0], 6.25, places=1)  # part + kerf
+        self.assertAlmostEqual(cut.bounds[2] - cut.bounds[0], 6.5, places=1)  # part + the 1/4" slot each side
 
     def test_manual_placement_checked(self):
         used = [[(10, 10), (20, 10), (20, 20), (10, 20)]]
@@ -491,9 +491,9 @@ class NestedJobTests(unittest.TestCase):
         self.assertEqual(info['errors'], [])
         self.assertEqual((info['width'], info['height']), (6.0, 4.0))
         shape = Polygon(info['nest_shape'])
-        # outline + cutter radius + half the clearance (+ a hair for curve simplifying)
-        self.assertAlmostEqual(shape.bounds[2] - shape.bounds[0], 6 + 2 * (0.125 + 0.0625 + 0.01), places=2)
-        self.assertTrue(shape.contains(Polygon(info['outline']).buffer(0.125 + 0.0625)))
+        # outline + the cut's slot (1/4") + half the cut gap (+ a hair for curve simplifying)
+        self.assertAlmostEqual(shape.bounds[2] - shape.bounds[0], 6 + 2 * (0.25 + 0.125 + 0.01), places=2)
+        self.assertTrue(shape.contains(Polygon(info['outline']).buffer(0.25 + 0.125)))
         self.assertEqual(sum(g['count'] for g in info['hole_groups']), 9)
 
     def test_two_parts_three_copies_with_rotation(self):
@@ -622,6 +622,44 @@ process.stdout.write(JSON.stringify({ best: n.best, util: n.utilization() }));
         for p in res.parts:
             for u in used:
                 self.assertLess(Polygon(p['cut_region']).intersection(Polygon(u)).area, 1e-6)
+
+    def test_cuts_leave_solid_material_between_parts(self):
+        """Read the end mill's real cutting moves: around each part, the cutter's far edge must
+        leave cfg.cut_gap of solid material before any other part's cut, the sheet edge and
+        any used area, so tabs always have material to hold on to."""
+        used = [[(0, 0), (24, 0), (24, 6), (0, 6)]]
+        sheet = roscam.Sheet('AL-5', 24, 48, used)
+        result, files = self._nest(sheet, [5, 6])
+        res = self._check(sheet, result, files)
+        gap, d = self.cfg.cut_gap, self.cfg.profile_tool.diameter
+        r = d / 2
+        em = res.programs[-1].gcode
+        slots = {p['label']: Polygon(p['outline']).buffer(d) for p in res.parts}
+        for p in res.parts:
+            label = p['label']
+            start = em.index(f'(=== {label}: outline ===)')
+            nxt = em.find('(=== ', start + 5)
+            section = em[start:nxt if nxt != -1 else len(em)]
+            pts = []
+            z = 1.0
+            for line in section.splitlines():
+                w = roscam._words(roscam._split_comment(line)[0].upper())
+                z = w.get('Z', z)
+                if 'X' in w and 'Y' in w and z < 0:
+                    pts.append(Point(w['X'], w['Y']))
+            self.assertTrue(pts, label)
+            for other, slot in slots.items():
+                if other == label:
+                    continue
+                closest = min(slot.distance(pt) for pt in pts) - r     # cutter edge to the other slot
+                self.assertGreaterEqual(closest, gap - 0.005, f'{label} vs {other}: {closest:.3f}"')
+            edge = min(min(pt.x, pt.y, 24 - pt.x, 48 - pt.y) for pt in pts) - r
+            self.assertGreaterEqual(edge, gap - 0.005, f'{label} to sheet edge: {edge:.3f}"')
+            used_dist = min(Polygon(used[0]).distance(pt) for pt in pts) - r
+            self.assertGreaterEqual(used_dist, gap - 0.005, f'{label} to used area: {used_dist:.3f}"')
+        # Mark as cut records the whole slot, not half of it
+        for p in res.parts:
+            self.assertAlmostEqual(Polygon(p['cut_region']).area, slots[p['label']].area, delta=0.05)
 
     def test_reports_what_does_not_fit(self):
         sheet = roscam.Sheet('AL-3', 24, 48, [[(0, 0), (24, 0), (24, 40), (0, 40)]])   # 8" strip left

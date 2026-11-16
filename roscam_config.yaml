@@ -33,6 +33,11 @@ setup:
   # How far every through-cut goes past the bottom of the stock into the
   # spoilboard.
   spoilboard_overcut: 1mm
+  # Solid material left between any two cuts on a sheet: between neighbouring parts'
+  # cuts, and between a cut and the sheet edge or a used area. The end mill's slot is
+  # already accounted for, so parts end up (2 x cutter diameter + cut_gap) apart:
+  # 0.75" with the 1/4" end mill. Tabs hold on to this material, so don't go below ~1/8".
+  cut_gap: 0.25
   # Height above the top of the stock for rapid moves between features.
   clearance_height: 0.2
   # Height above the top of the stock for rapid moves at program start/end.
