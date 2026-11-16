@@ -667,9 +667,13 @@ class JobResult:
     placement: Optional[Tuple[float, float]] = None       # part's lower-left corner on the sheet
     footprint: List[Tuple[float, float]] = field(default_factory=list)   # space the job needs
     cut_region: List[Tuple[float, float]] = field(default_factory=list)  # what to mark as used after cutting
+    parts: List[dict] = field(default_factory=list)   # nested jobs: one entry per placed copy
+    unplaced: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
+            'parts': self.parts,
+            'unplaced': self.unplaced,
             'sheet_id': self.sheet_id,
             'placement': list(self.placement) if self.placement else None,
             'footprint': [list(p) for p in self.footprint],
@@ -1037,12 +1041,20 @@ def build_setup_sheet(result: JobResult, cfg: ShopConfig, timestamp: str) -> str
         f'Material: {result.material}, {result.thickness_label}" ({result.thickness:.4f}")',
     ]
     if result.sheet_id:
-        px, py = result.placement
-        lines += [
-            f'Sheet:    {result.sheet_id} ({sx:g}" x {sy:g}")',
-            f'Part:     lower-left corner at X {px:.3f}" Y {py:.3f}" on the sheet',
-            f'Zero:     X0 Y0 at the LOWER-LEFT corner of the SHEET, Z0 on TOP of the sheet',
-        ]
+        lines += [f'Sheet:    {result.sheet_id} ({sx:g}" x {sy:g}")']
+        if result.parts:
+            lines.append(f'Parts:    {len(result.parts)} on this sheet')
+            for p in result.parts:
+                xs = [q[0] for q in p['outline']]
+                ys = [q[1] for q in p['outline']]
+                lines.append(f'          {p["label"]}: lower-left at X {min(xs):.3f}" Y {min(ys):.3f}", '
+                             f'turned {p["rotation"]} deg')
+        elif result.placement:
+            px, py = result.placement
+            lines.append(f'Part:     lower-left corner at X {px:.3f}" Y {py:.3f}" on the sheet')
+        if result.unplaced:
+            lines.append(f'Did NOT fit on this sheet: {", ".join(result.unplaced)}')
+        lines.append('Zero:     X0 Y0 at the LOWER-LEFT corner of the SHEET, Z0 on TOP of the sheet')
     else:
         lines += [
             f'Stock:    at least {sx:.2f}" (X) x {sy:.2f}" (Y)',
@@ -1069,6 +1081,249 @@ def build_setup_sheet(result: JobResult, cfg: ShopConfig, timestamp: str) -> str
     if result.warnings:
         lines += ['', 'Warnings:'] + [f'  - {w}' for w in result.warnings]
     return '\n'.join(lines) + '\n'
+
+
+# =============================================================================
+# Several parts nested on one sheet
+# =============================================================================
+
+# Extra margin added to nesting shapes so simplifying their curves can never make
+# them smaller than the real part.
+NEST_TOLERANCE = 0.01
+
+
+@dataclass
+class PartFile:
+    path: str
+    name: str
+
+
+def _load_part(path: str, cfg: ShopConfig, mat: Material, thk: Thickness, endmill: Tool) -> FRCPostProcessor:
+    pp = FRCPostProcessor(material_thickness=thk.value, tool_diameter=endmill.diameter,
+                          units='inch', config=_team_config_for(cfg, mat, thk))
+    pp.apply_material_preset(mat.id)
+    pp.tab_spacing = thk.tab_spacing
+    pp.load_dxf(path)
+    return pp
+
+
+def _hole_circles(pp: FRCPostProcessor):
+    perimeter = _perimeter_circle(pp)
+    return perimeter, [c for c in pp.circles if c is not perimeter]
+
+
+def part_info(path: str, name: str, material: str, thickness, cfg: Optional[ShopConfig] = None) -> dict:
+    """What the nesting step needs to know about one part: its outline, the shape it may
+    not overlap with others (outline + cutter + half the clearance), and its holes."""
+    cfg = cfg or load_config()
+    out = {'name': name, 'errors': [], 'warnings': [], 'hole_groups': [], 'outline': [], 'nest_shape': [],
+           'width': 0.0, 'height': 0.0}
+    try:
+        mat = cfg.material(material)
+        thk = mat.find_thickness(thickness)
+        endmill = mat.tool(cfg.profile_tool)
+        pp = _load_part(path, cfg, mat, thk, endmill)
+    except Exception as e:
+        out['errors'].append(f'Could not read {name}: {e}')
+        return out
+    if pp.layer_data:
+        out['errors'].append(f'{name} has depth layers (2.5D). RosCAM only handles flat, through-cut plates.')
+        return out
+    pp.transform_coordinates('bottom-left', 0, placement_offset=(0.0, 0.0), enforce_bounds=False)
+    outline = _part_outline(pp)
+    if outline is None:
+        out['errors'].append(f'Could not find the outline of {name}.')
+        return out
+    _, holes = _hole_circles(pp)
+    groups, errs, warns = plan_holes(holes, cfg, {})
+    shape = outline.buffer(endmill.diameter / 2 + SHEET_CLEARANCE / 2 + NEST_TOLERANCE, 16)
+    shape = shape.simplify(NEST_TOLERANCE, preserve_topology=True)
+    minx, miny, maxx, maxy = outline.bounds
+    out.update(outline=_coords(outline, 0.002), nest_shape=_coords(shape, 0.0),
+               width=round(maxx - minx, 4), height=round(maxy - miny, 4),
+               hole_groups=[g.to_dict() for g in groups], errors=[f'{name}: {e}' for e in errs],
+               warnings=[f'{name}: {w}' for w in warns])
+    return out
+
+
+def nest_setup(sheet: Sheet, cfg: Optional[ShopConfig] = None) -> dict:
+    """The sheet as the nesting step sees it: the rectangle a part's nesting shape must stay
+    inside, and the used areas it must stay out of. Nesting shapes are outline + cutter
+    radius + half the clearance, so the sheet edge and used areas get the other half here,
+    giving the same clearances generate_sheet_job checks."""
+    cfg = cfg or load_config()
+    half = SHEET_CLEARANCE / 2 + NEST_TOLERANCE
+    w, h = min(sheet.width, cfg.x_max), min(sheet.height, cfg.y_max)
+    bin_rect = [[half, half], [w - half, half], [w - half, h - half], [half, h - half]]
+    obstacles = []
+    if sheet.regions:
+        grown = unary_union([Polygon(rg).buffer(0) for rg in sheet.regions if len(rg) >= 3]).buffer(half, 8)
+        geoms = getattr(grown, 'geoms', [grown])
+        obstacles = [[list(p) for p in _coords(g, NEST_TOLERANCE / 2)] for g in geoms if not g.is_empty]
+    return {'bin': bin_rect, 'obstacles': obstacles}
+
+
+def generate_sheet_job(parts: List[PartFile], placements: List[dict], material: str, thickness,
+                       sheet: Sheet, cfg: Optional[ShopConfig] = None,
+                       overrides: Optional[Dict[str, str]] = None,
+                       unplaced: Optional[List[str]] = None,
+                       job_name: Optional[str] = None, timestamp: Optional[str] = None) -> JobResult:
+    """Programs for several parts laid out on one sheet.
+
+    placements: one dict per copy: {'part': index into parts, 'x', 'y', 'rotation'}, where
+    the copy's shape is the part's rotation-0 outline (lower-left at 0,0) turned
+    `rotation` degrees counter-clockwise about the origin and then moved by (x, y): the
+    layout the nesting step (web/nest) returns.
+    """
+    cfg = cfg or load_config()
+    timestamp = timestamp or datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+    name = sanitize_filename_base(job_name or (sheet.id if len(parts) != 1 else parts[0].name), 'job')
+    result = JobResult(success=False, part_name=name, sheet_id=sheet.id,
+                       stock_size=(sheet.width, sheet.height), unplaced=list(unplaced or []))
+    try:
+        mat = cfg.material(material)
+        thk = mat.find_thickness(thickness)
+    except ValueError as e:
+        result.errors.append(str(e))
+        return result
+    result.material, result.thickness_label, result.thickness = mat.name, thk.label, thk.value
+    endmill = mat.tool(cfg.profile_tool)
+    r = endmill.diameter / 2
+    if not placements:
+        result.errors.append('No parts are placed on the sheet.')
+        return result
+
+    # Rotation-0 outline of each part file, as the nesting step saw it.
+    base_outline = {}
+    for idx, part in enumerate(parts):
+        pp0 = _load_part(part.path, cfg, mat, thk, endmill)
+        if pp0.layer_data:
+            result.errors.append(f'{part.name} has depth layers (2.5D). RosCAM only handles flat plates.')
+            return result
+        pp0.transform_coordinates('bottom-left', 0, placement_offset=(0.0, 0.0), enforce_bounds=False)
+        base_outline[idx] = _part_outline(pp0)
+        if base_outline[idx] is None:
+            result.errors.append(f'Could not find the outline of {part.name}.')
+            return result
+
+    usable = box(0, 0, min(sheet.width, cfg.x_max), min(sheet.height, cfg.y_max))
+    blocked = unary_union([Polygon(rg).buffer(0) for rg in sheet.regions if len(rg) >= 3]) if sheet.regions else None
+
+    # Place every copy.
+    copies = []   # (label, pp, outline)
+    counts: Dict[int, int] = {}
+    for pl in placements:
+        idx = int(pl['part'])
+        part = parts[idx]
+        counts[idx] = counts.get(idx, 0) + 1
+        label = f'{part.name} #{counts[idx]}'
+        rot = int(round(float(pl.get('rotation', 0)))) % 360
+        if rot % 90:
+            result.errors.append(f'{label}: rotation {rot} deg is not a multiple of 90.')
+            continue
+        target = affinity.translate(affinity.rotate(base_outline[idx], rot, origin=(0, 0)),
+                                    float(pl['x']), float(pl['y']))
+        pp = _load_part(part.path, cfg, mat, thk, endmill)
+        pp.transform_coordinates('bottom-left', (360 - rot) % 360, placement_offset=(0.0, 0.0), enforce_bounds=False)
+        here = _part_outline(pp)
+        dx, dy = target.bounds[0] - here.bounds[0], target.bounds[1] - here.bounds[1]
+        pp.transform_coordinates('bottom-left', 0, placement_offset=(dx, dy), enforce_bounds=False)
+        outline = _part_outline(pp)
+        if outline.symmetric_difference(target).area > 1e-3 * max(target.area, 1e-9) + 1e-4:
+            result.errors.append(f'{label}: internal error placing the part (shape mismatch).')
+            continue
+        copies.append((label, pp, outline))
+
+    # Safety net: re-check the whole layout, whatever produced it.
+    for label, pp, outline in copies:
+        need = outline.buffer(r + SHEET_CLEARANCE)
+        if not usable.contains(need):
+            result.errors.append(f'{label} is too close to the edge of sheet {sheet.id} (or off it).')
+        if blocked is not None and need.intersection(blocked).area > 1e-6:
+            result.errors.append(f'{label} overlaps an area of sheet {sheet.id} that is already used.')
+    spaced = [outline.buffer(r + SHEET_CLEARANCE / 2) for _, _, outline in copies]
+    for i in range(len(copies)):
+        for j in range(i + 1, len(copies)):
+            if spaced[i].intersection(spaced[j]).area > 1e-6:
+                result.errors.append(f'{copies[i][0]} and {copies[j][0]} are too close together.')
+    if result.errors:
+        return result
+
+    # Holes: one plan for every hole on the sheet, so a size's tool is the same everywhere.
+    all_holes, per_copy = [], []
+    for label, pp, outline in copies:
+        perimeter, holes = _hole_circles(pp)
+        per_copy.append((perimeter, holes))
+        all_holes.extend(holes)
+    groups, errs, warns = plan_holes(all_holes, cfg, overrides)
+    result.hole_groups, result.errors, result.warnings = groups, errs, warns
+    if errs:
+        return result
+    milled = {g.key for g in groups if g.tool_id == MILL}
+    for (label, pp, outline), (perimeter, holes) in zip(copies, per_copy):
+        pp.circles = [c for c in pp.circles if c is perimeter or group_key(c['diameter']) in milled]
+        pp.classify_holes()
+        pp.identify_perimeter_and_pockets()
+
+    route_pp = copies[0][1]
+    planned = []
+    for drill in (mat.tool(d) for d in cfg.drills):
+        centers = [c for g in groups if g.tool_id == drill.id for c in g.centers]
+        if centers:
+            bottom = -(thk.value + cfg.overcut + drill.tip_length)
+            planned.append((drill, _drill_body(drill, _route(route_pp, centers), bottom, cfg), bottom,
+                            f'drill {plural(len(centers), "hole")}'))
+
+    # End mill: every copy's holes and pockets first, then every outline (the part
+    # stays held by the sheet while its inside is cut).
+    order = sorted(range(len(copies)), key=lambda k: (round(copies[k][2].bounds[1], 1), copies[k][2].bounds[0]))
+    interiors, outlines = [], []
+    n_holes = n_pockets = 0
+    for k in order:
+        label, pp, outline = copies[k]
+        phases = pp.generate_part_phases()
+        if phases['errors']:
+            result.errors.extend(f'{label}: {e}' for e in phases['errors'])
+            continue
+        safe = f'G0 Z{pp.retract_height:.4f}'
+        if phases['interior']:
+            interiors += ['', f'(=== {label}: holes and pockets ===)', safe] + phases['interior']
+        outlines += ['', f'(=== {label}: outline ===)', safe] + phases['perimeter'] + phases['tab_removal']
+        n_holes += len(pp.holes)
+        n_pockets += len(pp.pockets)
+    if result.errors:
+        return result
+    body = shift_z(expand_canned_cycles(interiors + outlines, top=thk.value), -thk.value)
+    body = linearize_helices(body)
+    bits = []
+    if n_holes:
+        bits.append(f'mill {plural(n_holes, "hole")}')
+    if n_pockets:
+        bits.append(plural(n_pockets, 'pocket'))
+    bits.append(plural(len(copies), 'outline') + (' with tabs' if cfg.tabs_enabled else ''))
+    planned.append((endmill, body, -(thk.value + cfg.overcut), ', '.join(bits)))
+
+    total = len(planned)
+    for i, (tool, body, bottom, summary) in enumerate(planned, 1):
+        lines = (_program_header(cfg, tool, name, mat, thk, i, total, result.stock_size, summary, timestamp,
+                                 sheet.id)
+                 + body + _program_footer(cfg))
+        gcode = finalize_gcode(lines)
+        p_err, p_warn = preflight(gcode, tool, bottom, cfg)
+        result.programs.append(Program(i, tool, f'{i:02d}_{name}_{tool.short_label}.nc', gcode, summary, p_err, p_warn))
+        result.errors.extend(p_err)
+        result.warnings.extend(p_warn)
+
+    for (label, pp, outline), pl in zip(copies, placements):
+        result.parts.append({
+            'label': label, 'x': float(pl['x']), 'y': float(pl['y']), 'rotation': int(pl.get('rotation', 0)) % 360,
+            'outline': [list(p) for p in _coords(outline)],
+            'footprint': [list(p) for p in _coords(outline.buffer(r + SHEET_CLEARANCE / 2))],
+            'cut_region': [list(p) for p in _coords(outline.buffer(r))],
+        })
+    result.setup_sheet = build_setup_sheet(result, cfg, timestamp)
+    result.success = not result.errors
+    return result
 
 
 # =============================================================================
@@ -1107,6 +1362,51 @@ def web_generate(dxf_bytes: bytes, filename: str, material: str, thickness: str,
         except Exception as e:  # unreadable DXF etc: report it instead of crashing the page
             return {'success': False, 'part_name': part, 'errors': [f'Could not process this DXF: {e}'],
                     'warnings': [], 'hole_groups': [], 'programs': [], 'setup_sheet': ''}
+    out = res.to_dict()
+    for d, p in zip(out['programs'], res.programs):
+        d['gcode'] = p.gcode
+        d['tool_type'] = p.tool.type
+        d['tool_diameter'] = p.tool.diameter
+    out['zip_name'] = f'{res.part_name}_roscam.zip'
+    out['zip_base64'] = base64.b64encode(res.zip_bytes()).decode('ascii') if res.success else ''
+    return out
+
+
+def web_part_info(dxf_bytes: bytes, filename: str, material: str, thickness: str,
+                  cfg: Optional[ShopConfig] = None) -> dict:
+    """Outline, nesting shape and holes of one uploaded DXF."""
+    import tempfile
+    name = sanitize_filename_base(os.path.splitext(os.path.basename(filename or 'part.dxf'))[0], 'part')
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'part.dxf')
+        with open(path, 'wb') as fh:
+            fh.write(bytes(dxf_bytes))
+        return part_info(path, name, material, thickness, cfg)
+
+
+def web_nest_setup(sheet: dict, cfg: Optional[ShopConfig] = None) -> dict:
+    return nest_setup(Sheet.from_dict(sheet), cfg)
+
+
+def web_generate_sheet(files: list, material: str, thickness: str, sheet: dict, placements: list,
+                       overrides: Optional[Dict[str, str]] = None, unplaced: Optional[list] = None,
+                       cfg: Optional[ShopConfig] = None) -> dict:
+    """Programs for a nested layout. files: [{'name', 'bytes'}] in part-index order."""
+    import base64
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        parts = []
+        for i, f in enumerate(files):
+            path = os.path.join(tmp, f'part{i}.dxf')
+            with open(path, 'wb') as fh:
+                fh.write(bytes(f['bytes']))
+            parts.append(PartFile(path, sanitize_filename_base(str(f['name']), f'part{i + 1}')))
+        try:
+            res = generate_sheet_job(parts, [dict(p) for p in placements], material, thickness,
+                                     Sheet.from_dict(sheet), cfg, overrides or {}, list(unplaced or []))
+        except Exception as e:
+            return {'success': False, 'part_name': 'job', 'errors': [f'Could not make programs: {e}'],
+                    'warnings': [], 'hole_groups': [], 'programs': [], 'setup_sheet': '', 'parts': []}
     out = res.to_dict()
     for d, p in zip(out['programs'], res.programs):
         d['gcode'] = p.gcode

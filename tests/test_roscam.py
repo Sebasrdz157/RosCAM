@@ -3,8 +3,11 @@ stock-top Z zero, peck expansion, and preflight checks."""
 
 import copy
 import io
+import json
 import math
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -460,6 +463,178 @@ class SheetTests(unittest.TestCase):
         self.assertEqual(out['sheet_id'], 'AL-9')
         self.assertGreaterEqual(out['placement'][1], 5)
         self.assertGreater(len(out['cut_region']), 3)
+
+
+class NestedJobTests(unittest.TestCase):
+    """Several parts laid out on one sheet (the layout comes from the nesting step)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.plate = build_plate(os.path.join(cls.tmp.name, 'plate.dxf'))             # 6 x 4
+        cls.small = _dxf(cls.tmp.name, [(0.5, 0.5, 0.203125), (2.5, 1.5, 0.203125)],
+                         size=(3.0, 2.0), name='small.dxf')                         # 3 x 2, two 13/64 holes
+        cls.cfg = roscam.load_config()
+        cls.parts = [roscam.PartFile(cls.plate, 'plate'), roscam.PartFile(cls.small, 'small')]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def _job(self, placements, regions=None, **kw):
+        sheet = roscam.Sheet('AL-250-07', 24, 48, regions or [])
+        return roscam.generate_sheet_job(self.parts, placements, 'aluminum', '1/4', sheet, self.cfg,
+                                         timestamp='2026-01-01 00:00', **kw)
+
+    def test_part_info(self):
+        info = roscam.part_info(self.plate, 'plate', 'aluminum', '1/4', self.cfg)
+        self.assertEqual(info['errors'], [])
+        self.assertEqual((info['width'], info['height']), (6.0, 4.0))
+        shape = Polygon(info['nest_shape'])
+        # outline + cutter radius + half the clearance (+ a hair for curve simplifying)
+        self.assertAlmostEqual(shape.bounds[2] - shape.bounds[0], 6 + 2 * (0.125 + 0.0625 + 0.01), places=2)
+        self.assertTrue(shape.contains(Polygon(info['outline']).buffer(0.125 + 0.0625)))
+        self.assertEqual(sum(g['count'] for g in info['hole_groups']), 9)
+
+    def test_two_parts_three_copies_with_rotation(self):
+        res = self._job([
+            {'part': 0, 'x': 0.5, 'y': 0.5, 'rotation': 0},
+            {'part': 1, 'x': 7.5, 'y': 0.5, 'rotation': 0},
+            {'part': 0, 'x': 10, 'y': 20, 'rotation': 90},
+        ])
+        self.assertTrue(res.success, res.errors)
+        self.assertEqual([p.filename for p in res.programs],
+                         ['01_AL-250-07_drill_5-32.nc', '02_AL-250-07_drill_13-64.nc', '03_AL-250-07_endmill_1-4.nc'])
+        drill = res.programs[1].gcode
+        self.assertEqual(drill.count('(Hole '), 5 + 2 + 5)
+        self.assertIn('G0 X1.0000 Y1.0000', drill)          # plate #1 hole (0.5,0.5) + (0.5,0.5)
+        self.assertIn('G0 X8.0000 Y1.0000', drill)          # small hole (0.5,0.5) + (7.5,0.5)
+        self.assertIn('G0 X9.5000 Y20.5000', drill)         # plate #2: (0.5,0.5) turned 90 CCW -> (-0.5,0.5), + (10,20)
+        self.assertEqual([p['label'] for p in res.parts], ['plate #1', 'small #1', 'plate #2'])
+        p2 = Polygon(res.parts[2]['outline'])
+        self.assertEqual(tuple(round(v, 3) for v in p2.bounds), (6.0, 20.0, 10.0, 26.0))
+        em = res.programs[2].gcode
+        last_inside = max(em.index('(=== plate #1: holes and pockets'), em.index('(=== plate #2: holes and pockets'))
+        first_outline = min(em.index(f'(=== {n}: outline') for n in ('plate #1', 'small #1', 'plate #2'))
+        self.assertLess(last_inside, first_outline)          # insides first, outlines last
+        self.assertEqual(em.count('PERIMETER WITH TABS'), 3)
+        self.assertIn('3 outlines with tabs', res.programs[2].feature_summary)
+        self.assertIn('small #1: lower-left at X 7.500" Y 0.500"', res.setup_sheet)
+        for p in res.programs:
+            self.assertEqual(p.errors, [])
+        st = roscam.analyze_motion(em)
+        self.assertEqual(st.rapids_below_top, 0)
+
+    def test_layout_checks(self):
+        overlap = self._job([{'part': 0, 'x': 0.5, 'y': 0.5}, {'part': 1, 'x': 6.6, 'y': 0.5}])
+        self.assertFalse(overlap.success)
+        self.assertIn('too close together', overlap.errors[0])
+        edge = self._job([{'part': 0, 'x': 0.1, 'y': 0.5}])
+        self.assertIn('edge', edge.errors[0])
+        used = self._job([{'part': 0, 'x': 0.5, 'y': 0.5}], regions=[[(5, 0), (24, 0), (24, 3), (5, 3)]])
+        self.assertIn('already used', used.errors[0])
+        self.assertIn('not a multiple of 90', self._job([{'part': 0, 'x': 5, 'y': 5, 'rotation': 45}]).errors[0])
+
+    def test_unplaced_listed_and_overrides_apply_everywhere(self):
+        res = self._job([{'part': 0, 'x': 0.5, 'y': 0.5}, {'part': 1, 'x': 7.5, 'y': 0.5}],
+                        overrides={'0.2031': 'drill_5_32', '0.2010': 'drill_5_32'}, unplaced=['small #2'])
+        self.assertTrue(res.success, res.errors)
+        self.assertEqual(len(res.programs), 2)                # every 13/64 hole moved to the 5/32 drill
+        self.assertIn('Did NOT fit on this sheet: small #2', res.setup_sheet)
+
+    def test_web_generate_sheet(self):
+        files = []
+        for path, name in ((self.plate, 'plate'), (self.small, 'small')):
+            with open(path, 'rb') as fh:
+                files.append({'name': name, 'bytes': fh.read()})
+        out = roscam.web_generate_sheet(files, 'aluminum', '1/4', {'id': 'AL-1', 'width': 24, 'height': 48},
+                                        [{'part': 0, 'x': 1, 'y': 1, 'rotation': 0},
+                                         {'part': 1, 'x': 1, 'y': 9, 'rotation': 270}])   # spans y 6..9
+        self.assertTrue(out['success'], out['errors'])
+        self.assertEqual(len(out['parts']), 2)
+        self.assertTrue(out['zip_base64'])
+        with open(self.small, 'rb') as fh:
+            info = roscam.web_part_info(fh.read(), 'small.dxf', 'aluminum', '1/4')
+        self.assertEqual(info['name'], 'small')
+
+
+@unittest.skipUnless(shutil.which('node'), 'needs node to run the nesting engine')
+class NestingEngineTests(unittest.TestCase):
+    """The nesting engine (web/nest, adapted from SVGnest) end to end: Python describes the
+    parts, the engine lays them out in node, and generate_sheet_job must accept the layout."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.plate = build_plate(os.path.join(cls.tmp.name, 'plate.dxf'))
+        cls.small = _dxf(cls.tmp.name, [(0.5, 0.5, 0.203125)], size=(3.0, 2.0), name='small.dxf')
+        cls.cfg = roscam.load_config()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def _nest(self, sheet, quantities, angles=(0, 90, 180, 270), steps=150):
+        files = [(self.plate, 'plate'), (self.small, 'small')]
+        infos = [roscam.part_info(p, n, 'aluminum', '1/4', self.cfg) for p, n in files]
+        setup = roscam.nest_setup(sheet, self.cfg)
+        job = {'bin': setup['bin'], 'obstacles': setup['obstacles'], 'angles': list(angles), 'steps': steps,
+               'parts': [{'shape': i['nest_shape'], 'quantity': q} for i, q in zip(infos, quantities)]}
+        script = """
+const path = require('path'); const dir = process.argv[1];
+globalThis.self = globalThis;
+self.ClipperLib = require(path.join(dir, 'clipper.js'));
+for (const f of ['geometryutil.js', 'nester.js']) require(path.join(dir, f));
+let seed = 1; const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+const job = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const n = new self.RosNester({ ...job, random });
+for (let i = 0; i < job.steps; i++) n.step();
+process.stdout.write(JSON.stringify({ best: n.best, util: n.utilization() }));
+"""
+        out = subprocess.run(['node', '-e', script, os.path.join(HERE, '..', 'web', 'nest')],
+                             input=json.dumps(job), capture_output=True, text=True, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout), files
+
+    def _check(self, sheet, result, files):
+        best = result['best']
+        parts = [roscam.PartFile(p, n) for p, n in files]
+        res = roscam.generate_sheet_job(parts, best['placements'], 'aluminum', '1/4', sheet, self.cfg)
+        self.assertTrue(res.success, res.errors)
+        return res
+
+    def test_fills_empty_sheet(self):
+        sheet = roscam.Sheet('AL-1', 24, 48)
+        result, files = self._nest(sheet, [6, 4])
+        self.assertEqual(result['best']['unplaced'], [])
+        self.assertEqual(len(result['best']['placements']), 10)
+        res = self._check(sheet, result, files)
+        self.assertEqual(len(res.parts), 10)
+        # gravity: everything packed into the bottom of the sheet (10 parts, ~170 sq in, need < 16")
+        self.assertLess(max(Polygon(p['outline']).bounds[3] for p in res.parts), 16)
+
+    def test_packs_around_used_areas(self):
+        used = [[(0, 0), (24, 0), (24, 8), (0, 8)], [(8, 8), (14, 8), (14, 20), (8, 20)]]
+        sheet = roscam.Sheet('AL-2', 24, 48, used)
+        result, files = self._nest(sheet, [4, 6])
+        self.assertEqual(result['best']['unplaced'], [])
+        res = self._check(sheet, result, files)
+        for p in res.parts:
+            for u in used:
+                self.assertLess(Polygon(p['cut_region']).intersection(Polygon(u)).area, 1e-6)
+
+    def test_reports_what_does_not_fit(self):
+        sheet = roscam.Sheet('AL-3', 24, 48, [[(0, 0), (24, 0), (24, 40), (0, 40)]])   # 8" strip left
+        result, files = self._nest(sheet, [8, 0], steps=60)
+        self.assertGreater(len(result['best']['unplaced']), 0)
+        self.assertGreater(len(result['best']['placements']), 0)
+        self._check(sheet, result, files)
+
+    def test_no_rotation_option(self):
+        sheet = roscam.Sheet('AL-4', 24, 48)
+        result, files = self._nest(sheet, [3, 3], angles=[0])
+        self.assertTrue(all(p['rotation'] == 0 for p in result['best']['placements']))
+        self._check(sheet, result, files)
 
 
 class WebApiTests(unittest.TestCase):
