@@ -46,14 +46,16 @@ areas already used (measured by hand, or recorded automatically with **Mark as c
 **Make programs**, pick a sheet as the stock and RosCAM places the part clear of the used
 areas (drag it to move it) and zeros the programs on the sheet's lower-left corner.
 
-Data lives in Supabase (`web/config.js` has the project URL and publishable key). One-time setup:
+Data lives in Supabase (`web/config.js` has the project URL and publishable key). Setup:
+Supabase dashboard -> **SQL Editor** -> paste `supabase/schema.sql` -> **Run** (safe to re-run).
 
-1. Supabase dashboard -> **SQL Editor** -> paste `supabase/schema.sql` -> **Run**.
-2. **Authentication -> Users -> Add user -> Create new user**: email `roscam@frc5572.org`
-   (or change it in both `web/config.js` and the last line of the SQL), a team password,
-   **Auto Confirm User** ticked.
+Editing is currently **open**: anyone using RosCAM can add and change sheets, no sign-in.
+To require sign-in later: create editor users under Authentication -> Users (Auto Confirm),
+add their emails to the `editors` table, run `supabase/lock_down.sql`, and set
+`requireSignIn: true` in `web/config.js`.
 
-Anyone can view the inventory; only emails in the `editors` table can change it.
+Suggested sheet IDs: material, thickness in thousandths, number, e.g. `AL-250-04`,
+`PC-063-01`. Write the ID near the sheet's lower-left corner (where measurements start).
 
 RosCAM is built on [PenguinCAM](https://github.com/6238/PenguinCAM) by FRC Team 6238
 (MIT license), which does the DXF parsing, pocketing, tool compensation and tabs. The

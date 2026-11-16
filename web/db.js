@@ -77,6 +77,9 @@
     if (!res.ok) {
       const msg = (data && (data.message || data.hint)) || `Request failed (${res.status})`;
       if (res.status === 401 || res.status === 403 || (data && data.code === '42501')) {
+        if (!cfg.requireSignIn && !t) {
+          throw new Error('The database is locked to signed-in editors. Re-run supabase/schema.sql in Supabase to open editing.');
+        }
         throw new Error(t ? 'This account is not allowed to change sheets. Ask an admin to add it to the editors list.'
                           : 'Sign in with the team account to change sheets.');
       }
@@ -89,8 +92,9 @@
     // Row rules hide rows a user may not change, so a refused update/delete "succeeds"
     // with nothing changed. Treat that as the error it is.
     if ((method === 'PATCH' || method === 'DELETE') && Array.isArray(data) && data.length === 0) {
-      throw new Error(t ? 'Nothing was changed: this account is not on the editors list, or the item no longer exists.'
-                        : 'Sign in with the team account to change sheets.');
+      throw new Error(t || !cfg.requireSignIn
+        ? 'Nothing was changed: the item no longer exists, or the database only lets editors change it.'
+        : 'Sign in with the team account to change sheets.');
     }
     return data;
   }
