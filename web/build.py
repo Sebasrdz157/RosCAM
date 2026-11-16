@@ -17,7 +17,7 @@ WEB = os.path.join(ROOT, 'web')
 DIST = os.path.join(ROOT, 'dist')
 
 WEB_FILES = ['index.html', 'roscam.css', 'app.js', 'worker.js', 'viewer.js', 'config.js', 'db.js',
-             'sheets.js']
+             'sheets.js', 'tools.js']
 NEST_FILES = ['nest-worker.js', 'nester.js', 'clipper.js', 'geometryutil.js', 'LICENSE-SVGnest.txt']
 PY_FILES = ['roscam.py', 'frc_cam_postprocessor.py', 'team_config.py', 'gcode_hygiene.py',
             'dxf_geometry.py', 'roscam_config.yaml']

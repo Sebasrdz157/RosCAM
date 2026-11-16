@@ -94,6 +94,53 @@ create policy "sheet_regions editable" on public.sheet_regions
 revoke all on public.sheets, public.sheet_regions, public.editors from anon, authenticated;
 grant select, insert, update, delete on public.sheets, public.sheet_regions to anon, authenticated;
 
+-- ---------------------------------------------------------------------------
+-- Tool library: bits added on RosCAM's Tools screen, on top of the ones built into
+-- roscam_config.yaml (a row with the same id as a built-in bit replaces it).
+-- Lengths are inches, feeds inches per minute.
+create table if not exists public.tools (
+  id              text primary key check (id ~ '^[a-z0-9_-]{1,40}$'),
+  name            text not null check (length(trim(name)) between 1 and 80),
+  type            text not null check (type in ('endmill', 'drill')),
+  diameter        numeric not null check (diameter > 0 and diameter <= 1),
+  flute_length    numeric not null check (flute_length > 0),
+  overall_length  numeric check (overall_length > 0),
+  flutes          integer check (flutes between 1 and 8),
+  spindle_speed   integer not null check (spindle_speed > 0),
+  plunge_rate     numeric not null check (plunge_rate > 0),
+  feed_rate       numeric check (feed_rate > 0),         -- end mills
+  ramp_feed_rate  numeric check (ramp_feed_rate > 0),    -- end mills
+  stepdown        numeric check (stepdown > 0),          -- end mills
+  tip_angle       numeric check (tip_angle > 0 and tip_angle < 180),   -- drills
+  peck            numeric not null default 0 check (peck >= 0),        -- drills
+  peck_retract    numeric not null default 0 check (peck_retract >= 0),
+  active          boolean not null default true,
+  notes           text not null default '',
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  check (type <> 'endmill' or (feed_rate is not null and ramp_feed_rate is not null and stepdown is not null))
+);
+
+create or replace function public.touch_tool() returns trigger
+language plpgsql set search_path = public as $$
+begin
+  new.updated_at := now();
+  return new;
+end $$;
+drop trigger if exists tools_touch on public.tools;
+create trigger tools_touch before update on public.tools
+  for each row execute function public.touch_tool();
+
+alter table public.tools enable row level security;
+drop policy if exists "tools readable" on public.tools;
+drop policy if exists "tools editable" on public.tools;
+create policy "tools readable" on public.tools
+  for select to anon, authenticated using (true);
+create policy "tools editable" on public.tools
+  for all to anon, authenticated using (true) with check (true);
+revoke all on public.tools from anon, authenticated;
+grant select, insert, update, delete on public.tools to anon, authenticated;
+
 -- Editors used once editing is locked down (supabase/lock_down.sql). Create each one under
 -- Authentication -> Users -> Add user (same email, a password, "Auto Confirm User" ticked).
 insert into public.editors (email) values ('roscam@frc5572.org')

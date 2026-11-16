@@ -118,6 +118,8 @@ call('options').then((opts) => {
   state.options = opts;
   RosSheets.init(opts);
   RosSheets.onChange(() => { fillStock(); refreshCutButton(); });
+  RosTools.init(opts);
+  RosTools.onChange(onToolsChanged);
   restoreChoices();
   els.rotation.disabled = false;
   els.engine.classList.add('ready');
@@ -145,10 +147,27 @@ els.stock.addEventListener('change', () => { saveChoices(); state.marked = new S
 els.rotation.addEventListener('change', () => { saveChoices(); refresh(); });
 els.goSheets.addEventListener('click', () => document.querySelector('.view-tab[data-view="sheets"]').click());
 
+// The tool library changed: refresh the menus that list bits, and re-plan the parts
+// (a new drill or end mill can change how holes and details are made).
+let toolsKey = '[]';
+async function onToolsChanged() {
+  const key = JSON.stringify(libraryTools());
+  if (key === toolsKey) return;
+  toolsKey = key;
+  try {
+    const opts = await call('options', { tools: libraryTools() });
+    state.options = { ...state.options, ...opts };
+  } catch (err) {
+    console.warn('Could not refresh the tool list', err);
+  }
+  for (const p of state.parts) p.infoKey = '';
+  refresh();
+}
+
 // ---- screens --------------------------------------------------------------------
 document.querySelectorAll('.view-tab').forEach((tab) => tab.addEventListener('click', () => {
   document.querySelectorAll('.view-tab').forEach((t) => t.setAttribute('aria-pressed', String(t === tab)));
-  for (const v of ['programs', 'sheets']) $(`view-${v}`).classList.toggle('hidden', v !== tab.dataset.view);
+  for (const v of ['programs', 'sheets', 'tools']) $(`view-${v}`).classList.toggle('hidden', v !== tab.dataset.view);
   if (tab.dataset.view === 'sheets') RosSheets.redraw();
   else if (state.result || state.layout) drawPreview(state.result);
 }));
@@ -283,7 +302,8 @@ async function doRefresh() {
   try {
     for (const p of state.parts) {
       if (p.infoKey !== key) {
-        p.info = await call('part_info', { bytes: p.bytes.slice(0), filename: `${p.name}.dxf`, material, thickness });
+        p.info = await call('part_info', { bytes: p.bytes.slice(0), filename: `${p.name}.dxf`, material, thickness,
+                                           tools: libraryTools() });
         p.infoKey = key;
         if (job !== state.job) return;
         renderParts();
@@ -310,7 +330,7 @@ async function doRefresh() {
 
   let setup;
   try {
-    setup = await call('nest_setup', { sheet });
+    setup = await call('nest_setup', { sheet, tools: libraryTools() });
   } catch (err) {
     if (job === state.job) showOnlyError(`Could not prepare sheet ${sheet.id}: ${err.message}`);
     return;
@@ -380,7 +400,7 @@ async function generatePrograms() {
       files: state.parts.map((p) => ({ name: p.name, bytes: p.bytes.slice(0) })),
       material: sheet.material, thickness: sheet.thickness, sheet,
       placements: layout.placements.map((p) => ({ part: p.part, x: p.x, y: p.y, rotation: p.rotation })),
-      overrides: state.overrides, unplaced: unplacedNames(layout),
+      overrides: state.overrides, unplaced: unplacedNames(layout), tools: libraryTools(),
     });
     if (job !== state.job || run !== state.nestRun) return;
     state.result = res;

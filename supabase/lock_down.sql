@@ -5,11 +5,14 @@
 
 drop policy if exists "sheets editable"        on public.sheets;
 drop policy if exists "sheet_regions editable" on public.sheet_regions;
+drop policy if exists "tools editable"         on public.tools;
 
 create policy "sheets editable" on public.sheets
   for all to authenticated using (public.is_editor()) with check (public.is_editor());
 create policy "sheet_regions editable" on public.sheet_regions
   for all to authenticated using (public.is_editor()) with check (public.is_editor());
+create policy "tools editable" on public.tools
+  for all to authenticated using (public.is_editor()) with check (public.is_editor());
 
-revoke insert, update, delete on public.sheets, public.sheet_regions from anon;
-grant insert, update, delete on public.sheets, public.sheet_regions to authenticated;
+revoke insert, update, delete on public.sheets, public.sheet_regions, public.tools from anon;
+grant insert, update, delete on public.sheets, public.sheet_regions, public.tools to authenticated;

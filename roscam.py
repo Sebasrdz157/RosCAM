@@ -164,6 +164,11 @@ class ShopConfig:
     def drills(self) -> List[Tool]:
         return sorted((t for t in self.tools.values() if t.is_drill), key=lambda t: t.diameter)
 
+    @property
+    def endmills(self) -> List[Tool]:
+        """Every end mill, largest first."""
+        return sorted((t for t in self.tools.values() if t.type == 'endmill'), key=lambda t: -t.diameter)
+
     def material(self, material_id: str) -> Material:
         try:
             return self.materials[material_id]
@@ -174,6 +179,94 @@ class ShopConfig:
 
 OVERRIDABLE_LENGTHS = {'stepdown', 'peck', 'peck_retract'}
 OVERRIDABLE_NUMBERS = {'spindle_speed', 'feed_rate', 'plunge_rate', 'ramp_feed_rate'}
+
+
+def tool_from_dict(tool_id: str, t: dict) -> Tool:
+    """Build a Tool from a roscam_config.yaml entry or a tool-library row (same keys)."""
+    if not tool_id:
+        raise ValueError('a tool needs an id')
+    ttype = t.get('type')
+    if ttype not in ('endmill', 'drill'):
+        raise ValueError(f'Tool {tool_id}: type must be endmill or drill, not {ttype!r}')
+
+    def num(key, cast=float, required=True):
+        v = t.get(key)
+        if v is None or v == '':
+            if required:
+                raise ValueError(f'Tool {tool_id} is missing {key}')
+            return None
+        return cast(v)
+
+    tool = Tool(
+        id=tool_id,
+        name=str(t.get('name') or tool_id),
+        type=ttype,
+        diameter=_length(t.get('diameter'), f'tool {tool_id} diameter'),
+        flute_length=_length(t.get('flute_length'), f'tool {tool_id} flute_length'),
+        overall_length=parse_length(t.get('overall_length')),
+        flutes=int(t['flutes']) if t.get('flutes') not in (None, '') else None,
+        spindle_speed=num('spindle_speed', lambda v: int(float(v))),
+        plunge_rate=num('plunge_rate'),
+        feed_rate=num('feed_rate', required=False),
+        ramp_feed_rate=num('ramp_feed_rate', required=False),
+        stepdown=parse_length(t.get('stepdown')) if t.get('stepdown') not in (None, '') else None,
+        tip_angle=num('tip_angle', required=False),
+        peck=parse_length(t.get('peck') or 0) or 0.0,
+        peck_retract=parse_length(t.get('peck_retract') or 0) or 0.0,
+    )
+    if ttype == 'endmill':
+        missing = [k for k in ('feed_rate', 'ramp_feed_rate', 'stepdown') if getattr(tool, k) is None]
+        if missing:
+            raise ValueError(f'End mill {tool_id} is missing: {", ".join(missing)}')
+    for key in ('diameter', 'flute_length', 'spindle_speed', 'plunge_rate', 'feed_rate', 'ramp_feed_rate', 'stepdown'):
+        v = getattr(tool, key)
+        if v is not None and v <= 0:
+            raise ValueError(f'Tool {tool_id}: {key} must be above 0')
+    if tool.diameter > 1.0:
+        raise ValueError(f'Tool {tool_id}: a {tool.diameter:g}" diameter looks wrong (lengths are inches)')
+    return tool
+
+
+_BASE_CONFIG: Optional['ShopConfig'] = None
+_LIBRARY_CACHE: Dict[str, Tuple['ShopConfig', List[str]]] = {}
+
+
+def base_config() -> 'ShopConfig':
+    global _BASE_CONFIG
+    if _BASE_CONFIG is None:
+        _BASE_CONFIG = load_config()
+    return _BASE_CONFIG
+
+
+def config_with_tools(library: Optional[list], base: Optional['ShopConfig'] = None) -> Tuple['ShopConfig', List[str]]:
+    """The shop config plus the tool library (rows from the Tools screen). A library tool
+    with the same id as a built-in one replaces it. Rows that don't make a valid tool are
+    skipped with a warning instead of breaking the job."""
+    base = base or base_config()
+    rows = [dict(r) for r in (library or []) if r and r.get('active', True) is not False]
+    if not rows:
+        return base, []
+    import json
+    key = json.dumps(rows, sort_keys=True, default=str) + '|' + str(id(base))
+    if key in _LIBRARY_CACHE:
+        return _LIBRARY_CACHE[key]
+    tools = dict(base.tools)
+    warnings = []
+    for row in rows:
+        tid = str(row.get('id') or '').strip()
+        label = row.get('name') or tid or 'a tool'
+        try:
+            tool = tool_from_dict(tid, row)
+        except (ValueError, TypeError, KeyError) as e:
+            warnings.append(f'{label} in the tool library was skipped: {e}')
+            continue
+        if tid == base.profile_tool_id and tool.type != 'endmill':
+            warnings.append(f'{label} in the tool library was skipped: it would replace the profile end mill with a drill.')
+            continue
+        tools[tid] = tool
+    cfg = dataclasses.replace(base, tools=tools)
+    _LIBRARY_CACHE[key] = (cfg, warnings)
+    return cfg, warnings
 
 
 def load_config(path: Optional[str] = None, data: Optional[dict] = None) -> ShopConfig:
@@ -187,33 +280,7 @@ def load_config(path: Optional[str] = None, data: Optional[dict] = None) -> Shop
     if s.get('z_zero', 'stock_top') != 'stock_top':
         raise ValueError('Only setup.z_zero: stock_top is supported')
 
-    tools = {}
-    for tool_id, t in data['tools'].items():
-        ttype = t['type']
-        if ttype not in ('endmill', 'drill'):
-            raise ValueError(f'Tool {tool_id}: type must be endmill or drill, not {ttype!r}')
-        tool = Tool(
-            id=tool_id,
-            name=t.get('name', tool_id),
-            type=ttype,
-            diameter=_length(t['diameter'], f'tool {tool_id} diameter'),
-            flute_length=_length(t['flute_length'], f'tool {tool_id} flute_length'),
-            overall_length=parse_length(t.get('overall_length')),
-            flutes=t.get('flutes'),
-            spindle_speed=int(t['spindle_speed']),
-            plunge_rate=float(t['plunge_rate']),
-            feed_rate=float(t['feed_rate']) if t.get('feed_rate') is not None else None,
-            ramp_feed_rate=float(t['ramp_feed_rate']) if t.get('ramp_feed_rate') is not None else None,
-            stepdown=parse_length(t.get('stepdown')),
-            tip_angle=float(t['tip_angle']) if t.get('tip_angle') is not None else None,
-            peck=parse_length(t.get('peck', 0)) or 0.0,
-            peck_retract=parse_length(t.get('peck_retract', 0)) or 0.0,
-        )
-        if ttype == 'endmill':
-            missing = [k for k in ('feed_rate', 'ramp_feed_rate', 'stepdown') if getattr(tool, k) is None]
-            if missing:
-                raise ValueError(f'End mill {tool_id} is missing: {", ".join(missing)}')
-        tools[tool_id] = tool
+    tools = {tool_id: tool_from_dict(tool_id, t) for tool_id, t in data['tools'].items()}
 
     profile_tool_id = data['profile_tool']
     if profile_tool_id not in tools or tools[profile_tool_id].type != 'endmill':
@@ -1341,10 +1408,23 @@ def generate_sheet_job(parts: List[PartFile], placements: List[dict], material: 
 # Browser API (used by web/worker.js through Pyodide)
 # =============================================================================
 
-def web_options(cfg: Optional[ShopConfig] = None) -> dict:
+def _tool_row(t: Tool, builtin: bool) -> dict:
+    return {'id': t.id, 'name': t.name, 'type': t.type, 'diameter': t.diameter, 'flute_length': t.flute_length,
+            'overall_length': t.overall_length, 'flutes': t.flutes, 'spindle_speed': t.spindle_speed,
+            'feed_rate': t.feed_rate, 'plunge_rate': t.plunge_rate, 'ramp_feed_rate': t.ramp_feed_rate,
+            'stepdown': t.stepdown, 'tip_angle': t.tip_angle, 'peck': t.peck, 'peck_retract': t.peck_retract,
+            'builtin': builtin}
+
+
+def web_options(cfg: Optional[ShopConfig] = None, tools: Optional[list] = None) -> dict:
     """What the web page needs to build its menus."""
-    cfg = cfg or load_config()
+    base = cfg or base_config()
+    cfg, tool_warnings = config_with_tools(tools, base)
     return {
+        'tools': [_tool_row(t, t.id in base.tools and t is base.tools[t.id]) for t in
+                  sorted(cfg.tools.values(), key=lambda t: (t.type, t.diameter))],
+        'endmills': [{'id': t.id, 'name': t.name, 'diameter': t.diameter} for t in cfg.endmills],
+        'tool_warnings': tool_warnings,
         'materials': [{'id': m.id, 'name': m.name, 'thicknesses': [t.label for t in m.thicknesses]}
                       for m in cfg.materials.values()],
         'drills': [{'id': d.id, 'name': d.name, 'diameter': d.diameter} for d in cfg.drills],
@@ -1384,9 +1464,10 @@ def web_generate(dxf_bytes: bytes, filename: str, material: str, thickness: str,
 
 
 def web_part_info(dxf_bytes: bytes, filename: str, material: str, thickness: str,
-                  cfg: Optional[ShopConfig] = None) -> dict:
+                  cfg: Optional[ShopConfig] = None, tools: Optional[list] = None) -> dict:
     """Outline, nesting shape and holes of one uploaded DXF."""
     import tempfile
+    cfg, _ = config_with_tools(tools, cfg or base_config())
     name = sanitize_filename_base(os.path.splitext(os.path.basename(filename or 'part.dxf'))[0], 'part')
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, 'part.dxf')
@@ -1395,16 +1476,19 @@ def web_part_info(dxf_bytes: bytes, filename: str, material: str, thickness: str
         return part_info(path, name, material, thickness, cfg)
 
 
-def web_nest_setup(sheet: dict, cfg: Optional[ShopConfig] = None) -> dict:
+def web_nest_setup(sheet: dict, cfg: Optional[ShopConfig] = None, tools: Optional[list] = None) -> dict:
+    cfg, _ = config_with_tools(tools, cfg or base_config())
     return nest_setup(Sheet.from_dict(sheet), cfg)
 
 
 def web_generate_sheet(files: list, material: str, thickness: str, sheet: dict, placements: list,
                        overrides: Optional[Dict[str, str]] = None, unplaced: Optional[list] = None,
-                       cfg: Optional[ShopConfig] = None, job_name: Optional[str] = None) -> dict:
+                       cfg: Optional[ShopConfig] = None, job_name: Optional[str] = None,
+                       tools: Optional[list] = None) -> dict:
     """Programs for a nested layout. files: [{'name', 'bytes'}] in part-index order."""
     import base64
     import tempfile
+    cfg, tool_warnings = config_with_tools(tools, cfg or base_config())
     with tempfile.TemporaryDirectory() as tmp:
         parts = []
         for i, f in enumerate(files):
@@ -1420,6 +1504,7 @@ def web_generate_sheet(files: list, material: str, thickness: str, sheet: dict, 
             return {'success': False, 'part_name': 'job', 'errors': [f'Could not make programs: {e}'],
                     'warnings': [], 'hole_groups': [], 'programs': [], 'setup_sheet': '', 'parts': []}
     out = res.to_dict()
+    out['warnings'] = tool_warnings + out['warnings']
     for d, p in zip(out['programs'], res.programs):
         d['gcode'] = p.gcode
         d['tool_type'] = p.tool.type

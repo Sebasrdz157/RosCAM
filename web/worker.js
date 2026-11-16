@@ -61,7 +61,9 @@ self.onmessage = async (event) => {
     const roscam = pyodide.pyimport('roscam');
     let result;
     if (type === 'options') {
-      result = toJs(roscam.web_options());
+      const tools = pyodide.toPy((args && args.tools) || []);
+      result = toJs(roscam.web_options.callKwargs({ tools }));
+      tools.destroy();
     } else if (type === 'generate') {
       const bytes = pyodide.toPy(new Uint8Array(args.bytes));
       const overrides = pyodide.toPy(args.overrides || {});
@@ -72,21 +74,26 @@ self.onmessage = async (event) => {
       for (const p of [bytes, overrides, sheet, placement]) if (p) p.destroy();
     } else if (type === 'part_info') {
       const bytes = pyodide.toPy(new Uint8Array(args.bytes));
-      result = toJs(roscam.web_part_info(bytes, args.filename, args.material, args.thickness));
+      const tools = pyodide.toPy(args.tools || []);
+      result = toJs(roscam.web_part_info.callKwargs(bytes, args.filename, args.material, args.thickness, { tools }));
       bytes.destroy();
+      tools.destroy();
     } else if (type === 'nest_setup') {
       const sheet = pyodide.toPy(args.sheet);
-      result = toJs(roscam.web_nest_setup(sheet));
+      const tools = pyodide.toPy(args.tools || []);
+      result = toJs(roscam.web_nest_setup.callKwargs(sheet, { tools }));
       sheet.destroy();
+      tools.destroy();
     } else if (type === 'generate_sheet') {
       const files = pyodide.toPy(args.files.map((f) => ({ name: f.name, bytes: new Uint8Array(f.bytes) })));
       const sheet = pyodide.toPy(args.sheet);
       const placements = pyodide.toPy(args.placements);
       const overrides = pyodide.toPy(args.overrides || {});
       const unplaced = pyodide.toPy(args.unplaced || []);
+      const tools = pyodide.toPy(args.tools || []);
       result = toJs(roscam.web_generate_sheet.callKwargs(files, args.material, args.thickness, sheet, placements,
-                                                         overrides, unplaced, { job_name: args.jobName || null }));
-      for (const p of [files, sheet, placements, overrides, unplaced]) p.destroy();
+                                                         overrides, unplaced, { job_name: args.jobName || null, tools }));
+      for (const p of [files, sheet, placements, overrides, unplaced, tools]) p.destroy();
     } else {
       throw new Error(`Unknown request ${type}`);
     }

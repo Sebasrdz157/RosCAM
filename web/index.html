@@ -23,6 +23,7 @@
       <nav class="views" aria-label="RosCAM screens">
         <button type="button" class="view-tab" data-view="programs" aria-pressed="true">Make programs</button>
         <button type="button" class="view-tab" data-view="sheets" aria-pressed="false">Sheets</button>
+        <button type="button" class="view-tab" data-view="tools" aria-pressed="false">Tools</button>
       </nav>
     </header>
 
@@ -284,6 +285,60 @@
         </section>
       </div>
     </div>
+    <div id="view-tools" class="view hidden">
+      <p id="tools-msg" class="sheets-msg" aria-live="polite"></p>
+      <div class="sheets-layout">
+        <section class="block">
+          <div class="sheets-head">
+            <div>
+              <h2>Your bits</h2>
+              <p class="hint">The drills and end mills RosCAM can use. Holes that match a drill are drilled; areas the
+                1/4" end mill can't reach (like rack teeth) are cut with the largest smaller end mill listed here.</p>
+            </div>
+            <button id="new-tool" class="btn primary needs-editor" type="button">+ Add a bit</button>
+          </div>
+          <div id="tools-groups"></div>
+        </section>
+
+        <section id="tool-panel" class="block card">
+          <div id="tool-empty" class="panel-empty">
+            <h2>No bit selected</h2>
+            <p class="hint">Click a bit on the left to see its numbers, or click <strong>+ Add a bit</strong>.</p>
+          </div>
+
+          <div id="tool-view" class="hidden">
+            <h2 id="tool-view-title"></h2>
+            <p id="tool-view-meta" class="hint"></p>
+            <dl id="tool-view-list" class="stats tool-stats"></dl>
+            <div class="actions">
+              <button id="tool-copy" class="btn needs-editor" type="button">Copy to library to change it</button>
+              <button id="tool-edit" class="btn needs-editor" type="button">Edit</button>
+            </div>
+          </div>
+
+          <form id="tool-form" class="hidden">
+            <h2 id="tool-form-title">Add a bit</h2>
+            <p class="hint">Lengths in inches (decimals or fractions like 1/8). Feeds in inches per minute. New bits start
+              with typical numbers: check them against the bit maker's chart.</p>
+            <div class="form-grid">
+              <label class="field"><span>Type</span>
+                <select id="t-type"><option value="endmill">End mill</option><option value="drill">Drill</option></select></label>
+              <label class="field wide"><span>Name</span><input id="t-name" maxlength="80" placeholder='1/8" 2-flute end mill' required></label>
+            </div>
+            <div id="t-fields" class="form-grid"></div>
+            <div class="form-grid">
+              <label class="field wide"><span>Notes (optional)</span><input id="t-notes" maxlength="200"></label>
+              <label class="check"><input id="t-active" type="checkbox" checked> In use</label>
+            </div>
+            <div class="actions">
+              <button class="btn primary needs-editor" type="submit">Save bit</button>
+              <button id="t-cancel" class="btn" type="button">Cancel</button>
+              <button id="t-delete" class="btn danger needs-editor hidden" type="button">Delete from library</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </div>
   </main>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -291,6 +346,7 @@
   <script src="config.js?v=dev"></script>
   <script src="db.js?v=dev"></script>
   <script src="sheets.js?v=dev"></script>
+  <script src="tools.js?v=dev"></script>
   <script src="app.js?v=dev"></script>
 </body>
 </html>

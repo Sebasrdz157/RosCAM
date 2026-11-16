@@ -128,6 +128,51 @@ class ConfigTests(unittest.TestCase):
             roscam.load_config(data=bad)
 
 
+class ToolLibraryTests(unittest.TestCase):
+    """Bits added on the Tools screen (Supabase rows) on top of roscam_config.yaml."""
+
+    def setUp(self):
+        self.base = roscam.load_config()
+
+    def test_adds_tools(self):
+        rows = [{'id': 'drill_1_8', 'name': '1/8 drill', 'type': 'drill', 'diameter': '1/8', 'flute_length': 1,
+                 'tip_angle': 118, 'spindle_speed': 8000, 'plunge_rate': 25, 'peck': '1mm', 'peck_retract': '0.3mm'},
+                {'id': 'endmill_1_8', 'name': '1/8 end mill', 'type': 'endmill', 'diameter': 0.125,
+                 'flute_length': 0.5, 'spindle_speed': 18000, 'feed_rate': 40, 'plunge_rate': 5,
+                 'ramp_feed_rate': 15, 'stepdown': 0.02}]
+        cfg, warnings = roscam.config_with_tools(rows, self.base)
+        self.assertEqual(warnings, [])
+        self.assertEqual(roscam.match_drill(0.125, cfg).id, 'drill_1_8')
+        self.assertEqual([t.id for t in cfg.endmills], ['endmill_1_4', 'endmill_1_8'])
+        self.assertNotIn('drill_1_8', self.base.tools)          # the base config is untouched
+
+    def test_bad_rows_skipped_with_warning(self):
+        rows = [{'id': 'bad', 'name': 'Broken bit', 'type': 'endmill', 'diameter': 0.125, 'flute_length': 0.5,
+                 'spindle_speed': 18000, 'plunge_rate': 5},                    # no feed / ramp / stepdown
+                {'id': 'huge', 'name': 'Typo', 'type': 'drill', 'diameter': 5, 'flute_length': 1,
+                 'spindle_speed': 1, 'plunge_rate': 1},
+                {'id': 'off', 'name': 'Retired', 'type': 'drill', 'diameter': 0.1, 'flute_length': 1,
+                 'spindle_speed': 1, 'plunge_rate': 1, 'active': False}]
+        cfg, warnings = roscam.config_with_tools(rows, self.base)
+        self.assertEqual(len(warnings), 2)
+        self.assertIn('Broken bit', warnings[0])
+        self.assertNotIn('off', cfg.tools)
+
+    def test_library_can_replace_builtin_feeds(self):
+        row = {**roscam.web_options()['tools'][0]}
+        row.update(spindle_speed=7500)
+        cfg, _ = roscam.config_with_tools([row], self.base)
+        self.assertEqual(cfg.tools[row['id']].spindle_speed, 7500)
+
+    def test_web_options_lists_library_tools(self):
+        o = roscam.web_options(tools=[{'id': 'drill_3_16', 'name': '3/16 drill', 'type': 'drill', 'diameter': '3/16',
+                                       'flute_length': 1, 'spindle_speed': 7000, 'plunge_rate': 30}])
+        ids = {t['id']: t['builtin'] for t in o['tools']}
+        self.assertTrue(ids['drill_13_64'])
+        self.assertFalse(ids['drill_3_16'])
+        self.assertIn('drill_3_16', [d['id'] for d in o['drills']])
+
+
 class HolePlanTests(unittest.TestCase):
     def setUp(self):
         self.cfg = roscam.load_config()
