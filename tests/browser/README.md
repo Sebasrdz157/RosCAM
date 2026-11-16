@@ -34,4 +34,6 @@ node tests/browser/toolstest.js $S     # Tools screen + a rack that needs a 1/8"
 node tests/browser/sheettest.js $S     # Sheets screen
 node tests/browser/simtest.js $S       # 3D simulation
 node tests/browser/pyodide_repro.js $S # browser Python engine in node (crash reproduction)
+# Same tests against RosCAM as PartsTracker serves it (after web/build.py --partstracker and cargo run):
+ROSCAM_URL=http://localhost:5572/cnc/roscam/ node tests/browser/nesttest.js $S
 ```

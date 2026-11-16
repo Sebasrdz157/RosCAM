@@ -56,7 +56,7 @@ async function fakeSupabase(route) {
   page.on('pageerror', (e) => console.log('pageerror:', e.message));
   page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) console.log('console error:', m.text().slice(0, 200)); });
   page.on('dialog', (d) => d.accept());
-  await page.goto('http://localhost:8765/');
+  await page.goto(process.env.ROSCAM_URL || 'http://localhost:8765/');
   await page.waitForSelector('#engine.ready', { timeout: 180000 });
   await page.waitForTimeout(500);
   console.log('material/thickness fields gone:', !(await page.$('#material')) && !(await page.$('#thickness')));
@@ -137,6 +137,28 @@ async function fakeSupabase(route) {
   const [one] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#one-part-zip')]);
   await one.saveAs(`${S}/one_part.zip`);
   console.log('one part:', one.suggestedFilename(), '|', await page.textContent('#one-part-msg'));
+  console.log('one-part zip entries:', require('child_process').execFileSync('python3', ['-c',
+    'import sys,zipfile; print(sorted(zipfile.ZipFile(sys.argv[1]).namelist()))', `${S}/one_part.zip`]).toString().trim());
+
+  // downloads are converted for the router (.mmg) by default, plain .nc when asked
+  await page.waitForFunction(() => /\.mmg$/.test(document.querySelector('#programs .file').textContent));
+  console.log('program files:', await page.$$eval('#programs .file', (l) => l.map((x) => x.textContent)));
+  const [one1] = await Promise.all([page.waitForEvent('download'), page.click('#programs li .btn')]);
+  await one1.saveAs(`${S}/prog1.mmg`);
+  const t1 = fs.readFileSync(`${S}/prog1.mmg`, 'utf8');
+  console.log('download:', one1.suggestedFilename(), '| starts:', JSON.stringify(t1.slice(0, 26)), '| CRLF:', t1.includes('\r\n'));
+  const [all] = await Promise.all([page.waitForEvent('download'), page.click('#zip')]);
+  await all.saveAs(`${S}/all.zip`);
+  console.log('zip check:', require('child_process').execFileSync('python3', ['-c', `
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1]); print(z.testzip() is None, sorted(z.namelist()))
+setup = [n for n in z.namelist() if n.endswith('_SETUP.txt')][0]
+t = z.read(setup).decode(); print('.nc' in t, 'already converted' in t)`, `${S}/all.zip`]).toString().trim());
+  console.log('setup sheet on screen names .mmg:', /\.mmg/.test(await page.textContent('#sheet')));
+  await page.selectOption('#out-format', 'nc');
+  const [nc] = await Promise.all([page.waitForEvent('download'), page.click('#programs li .btn')]);
+  console.log('plain .nc download:', nc.suggestedFilename());
+  await page.selectOption('#out-format', 'mmg');
 
   // mark as cut from the one-part shortcut: only that part is pre-ticked
   console.log('one-part cut button:', await page.textContent('#one-part-cut'));

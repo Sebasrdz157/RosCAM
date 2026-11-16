@@ -14,6 +14,10 @@
       <img class="brand-logo" src="logo.png?v=dev" alt="Team 5572 logo" width="32" height="32">
       <h1>RosCAM</h1>
     </div>
+    <nav id="host-tabs" class="host-tabs hidden" aria-label="CNC tools">
+      <a href="/cnc">Converter</a>
+      <a href="/cnc/roscam/" aria-current="page">RosCAM</a>
+    </nav>
     <nav class="views" aria-label="RosCAM screens">
       <button type="button" class="view-tab" data-view="programs" aria-pressed="true">Make programs</button>
       <button type="button" class="view-tab" data-view="sheets" aria-pressed="false">Sheets</button>
@@ -179,6 +183,14 @@
             <h2 class="section-title">Programs</h2>
             <p class="hint">Run them in this order, swapping the bit and re-zeroing Z between programs.</p>
             <ol id="programs" class="programs"></ol>
+            <div class="out-format">
+              <label class="field"><span>Files</span>
+                <select id="out-format">
+                  <option value="mmg">Ready for the router (.mmg)</option>
+                  <option value="nc">Plain G-code (.nc), to convert later</option>
+                </select></label>
+              <label class="check" id="strip-wrap"><input id="out-strip" type="checkbox"> Strip unnecessary comments, like VCarve</label>
+            </div>
             <button id="zip" class="btn primary block-btn" type="button">Download all (.zip)</button>
             <div class="one-part">
               <label class="field"><span>Or just one part</span><select id="one-part"></select></label>
@@ -187,8 +199,7 @@
               <button id="one-part-cut" class="btn block-btn needs-editor hidden" type="button"></button>
               <p class="hint">"Just one part" makes programs for that part alone, in the same spot on the sheet.</p>
             </div>
-            <p class="hint note">Convert each <code>.nc</code> file with the Converter before running it, and dry-run above the stock
-              if anything looks unfamiliar.</p>
+            <p class="hint note" id="format-note"></p>
           </div>
 
           <div id="cut-actions" class="panel-section cut-actions hidden">
@@ -403,6 +414,7 @@
   <script src="db.js?v=dev"></script>
   <script src="sheets.js?v=dev"></script>
   <script src="tools.js?v=dev"></script>
+  <script src="converter.js?v=dev"></script>
   <script src="app.js?v=dev"></script>
 </body>
 </html>

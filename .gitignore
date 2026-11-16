@@ -46,3 +46,6 @@ test_output_*.nc
 __pycache__/
 *.pyc
 dist/
+
+# Rust build output of converter/
+converter/target/

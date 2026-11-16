@@ -1,0 +1,22 @@
+# PartsTracker's G-code -> Richauto (.mmg) converter, compiled to WebAssembly so RosCAM can
+# hand out converted files straight from the browser. src/gcode/ is a verbatim copy of
+# Frc5572/PartsTracker src/gcode/ (see README.md and sync.sh); only src/lib.rs is RosCAM's.
+[package]
+name = "roscam_converter"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true
+codegen-units = 1

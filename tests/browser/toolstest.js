@@ -67,7 +67,7 @@ async function fakeSupabase(route) {
   page.on('pageerror', (e) => console.log('pageerror:', e.message));
   page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) console.log('console error:', m.text().slice(0, 200)); });
   page.on('dialog', (d) => d.accept());
-  await page.goto('http://localhost:8765/');
+  await page.goto(process.env.ROSCAM_URL || 'http://localhost:8765/');
   await page.waitForSelector('#engine.ready', { timeout: 180000 });
   await page.waitForTimeout(500);
   console.log('material/thickness fields gone:', !(await page.$('#material')) && !(await page.$('#thickness')));

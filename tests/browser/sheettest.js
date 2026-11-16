@@ -79,7 +79,7 @@ async function fakeSupabase(route) {
   page.on('pageerror', (e) => console.log('pageerror:', e.message));
   page.on('console', (m) => { if (m.type() === 'error') console.log('console error:', m.text().slice(0, 200)); });
   page.on('dialog', (d) => d.accept());
-  await page.goto('http://localhost:8765/');
+  await page.goto(process.env.ROSCAM_URL || 'http://localhost:8765/');
   await page.waitForSelector('#engine.ready', { timeout: 180000 });
 
   // --- Sheets screen (open editing, no sign-in)

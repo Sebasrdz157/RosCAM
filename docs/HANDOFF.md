@@ -32,10 +32,20 @@ Open questions for the user: which material each VCarve end mill setting belongs
 (17820 RPM / 144 in/min vs 20978 RPM / 33 in/min seen in `In.mmg`/`out.mmg`); confirm drill
 numbers (an earlier chat had 7200 RPM / 45 in/min).
 
-**Output path:** RosCAM writes plain G0-G3 `.nc` in inches. The team converts each file to
-Richauto `.mmg` with PartsTracker's `/cnc` page (Rust, `src/gcode/`). That converter keeps
-comments up to 60 chars and drops quotes, drops `G4`, and warns on helical arcs (RosCAM
-linearizes them). It reproduces the shop's VCarve files byte-for-byte.
+**Output path:** the CAM engine writes plain G0-G3 `.nc` in inches; the web app then runs
+PartsTracker's converter (Rust `src/gcode/`, copied verbatim into `converter/src/gcode/` and
+compiled to WebAssembly) in the browser, so downloads are router-ready Richauto `.mmg` files
+(a "Files" menu still offers plain `.nc`). Verified byte-for-byte against PartsTracker's live
+`/cnc/convert` (`tests/converter/compare_wasm.js`). That converter keeps comments up to 60
+chars and drops quotes, drops `G4`, and warns on helical arcs (RosCAM linearizes them).
+
+**Where RosCAM is served:** inside PartsTracker at `/cnc/roscam/` (a Converter | RosCAM switch
+on both pages). This repo stays the place RosCAM is developed and tested; to update the team
+site run `uv run python web/build.py --partstracker ../PartsTracker` and open a PartsTracker pull
+request with the regenerated `src/routes/roscam/` (someone else approves PartsTracker merges;
+merging deploys production). The export refuses if `converter/src/gcode` and PartsTracker's
+`src/gcode` differ: run `converter/sync.sh ../PartsTracker` first. GitHub Pages still
+publishes a standalone copy from `main`. Building needs Rust + `rustup target add wasm32-unknown-unknown`.
 
 ## What exists
 
@@ -52,9 +62,9 @@ linearizes them). It reproduces the shop's VCarve files byte-for-byte.
 - **Supabase** (`supabase/schema.sql`, `lock_down.sql`): tables `sheets`, `sheet_regions`,
   `tools`, `editors`. Editing is currently **open** (no sign-in, `requireSignIn: false` in
   `web/config.js`). Project URL and publishable key are in `web/config.js` (public by design).
-- **PartsTracker** branch `cnc-roscam-tab`: adds Converter | RosCAM tabs to `/cnc` and a
-  `/cnc/roscam` page that frames `https://sebasrdz157.github.io/RosCAM/`. Additive only.
-  Not merged (user decides; merging deploys production).
+- **PartsTracker** serves the app at `/cnc/roscam/` (`src/routes/roscam.rs` + generated
+  `src/routes/roscam/`). The older `cnc-roscam-tab` branch (an iframe of GitHub Pages) is
+  superseded.
 
 ## Branch state (update when it changes)
 

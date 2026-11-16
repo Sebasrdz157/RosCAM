@@ -64,6 +64,13 @@ code { font-family: var(--mono); font-size: .95em; color: var(--text); }
   filter: drop-shadow(0 0 .6px rgba(230, 232, 238, .9)) drop-shadow(0 0 .6px rgba(230, 232, 238, .6));
 }
 .views { display: flex; gap: var(--s1); }
+/* Inside PartsTracker: switch between its Converter and RosCAM */
+.host-tabs { display: flex; align-self: center; padding: 3px; gap: 2px; background: var(--bg);
+             border: 1px solid var(--border); border-radius: var(--radius); flex: none; }
+.host-tabs a { padding: 4px 10px; border-radius: var(--radius-sm); color: var(--text-2); text-decoration: none;
+               font-size: 12px; font-weight: 600; }
+.host-tabs a:hover { color: var(--text); background: var(--surface-2); }
+.host-tabs a[aria-current="page"] { color: #fff; background: var(--accent); }
 .view-tab {
   display: flex; align-items: center; padding: 0 var(--s3); margin-bottom: -1px;
   background: none; border: none; border-bottom: 2px solid transparent;
@@ -340,6 +347,7 @@ input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent);
 .programs .file { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 .programs .meta { grid-column: 2; color: var(--text-2); font-size: 12px; }
 .programs .btn { grid-row: 1 / span 2; grid-column: 3; min-height: 28px; padding: 3px 10px; font-size: 12px; }
+.out-format { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s2) 0 var(--s1); }
 .one-part { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s2); padding-top: var(--s3); border-top: 1px dashed var(--border); }
 .cut-actions .btn { white-space: normal; }
 .cut-pick { background: var(--surface-2); }
