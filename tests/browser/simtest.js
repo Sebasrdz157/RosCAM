@@ -2,6 +2,18 @@ const { chromium } = require('playwright');
 const fs = require('fs'), path = require('path');
 const S = process.argv[2];
 
+// Stand-in for Supabase: one active sheet, nothing else.
+const SB = 'https://ugapgbvcnizrirzynhbw.supabase.co';
+const SHEETS = [{ id: 'AL-250-01', material: 'aluminum', thickness: '1/4', width: 24, height: 48, status: 'active',
+                  notes: '', created_at: '2026-01-01', sheet_regions: [] }];
+function fakeSupabase(route) {
+  const req = route.request(), url = new URL(req.url());
+  const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' };
+  if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+  const body = req.method() === 'GET' && url.pathname.endsWith('/sheets') ? SHEETS : [];
+  route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body), headers: cors });
+}
+
 function serve(route, file, type) {
   if (!fs.existsSync(file)) { console.log('missing', file); return route.abort(); }
   route.fulfill({ body: fs.readFileSync(file), contentType: type, headers: { 'access-control-allow-origin': '*' } });
@@ -22,14 +34,17 @@ function serve(route, file, type) {
   await context.route('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js',
     (r) => serve(r, path.join(S, 'three/package/examples/js/controls/OrbitControls.js'), 'text/javascript'));
 
+  await context.route(`${SB}/**`, fakeSupabase);
+
   const page = await context.newPage();
   page.on('pageerror', (e) => console.log('pageerror:', e.message));
   page.on('console', (m) => { if (m.type() === 'error') console.log('console error:', m.text().slice(0, 200)); });
   await page.goto('http://localhost:8765/');
   await page.waitForSelector('#engine.ready, #engine.failed', { timeout: 180000 });
-  await page.selectOption('#thickness', '1/4');
+  await page.waitForFunction(() => [...document.querySelectorAll('#stock option')].some((o) => o.value === 'AL-250-01'));
+  await page.selectOption('#stock', 'AL-250-01');
   await page.setInputFiles('#file', require('path').resolve(__dirname, '../fixtures/roscam_plate.dxf'));
-  await page.waitForSelector('.status.ok, .status.err', { timeout: 120000 });
+  await page.waitForSelector('.status.ok, .status.err', { timeout: 180000 });
   console.log('status:', await page.textContent('#status'));
   console.log('sim options:', await page.$$eval('#sim-program option', (o) => o.map((x) => x.textContent)));
   console.log('fallback shown:', await page.isVisible('#sim-fallback'));

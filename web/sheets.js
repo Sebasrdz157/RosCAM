@@ -90,28 +90,28 @@
     const P = (x, y) => [ox + x * scale, oy - y * scale];
     const toIn = (px, py) => [(px - ox) / scale, (oy - py) / scale];
 
-    ctx.fillStyle = '#1a1d23';
+    ctx.fillStyle = '#1a1e25';
     ctx.fillRect(ox, oy - sheet.height * scale, sheet.width * scale, sheet.height * scale);
-    ctx.strokeStyle = '#8b8fa8'; ctx.lineWidth = 1;
+    ctx.strokeStyle = '#9aa0ae'; ctx.lineWidth = 1;
     ctx.strokeRect(ox, oy - sheet.height * scale, sheet.width * scale, sheet.height * scale);
 
     for (const r of sheet.sheet_regions || []) {
       ctx.beginPath();
       r.polygon.forEach(([x, y], i) => (i ? ctx.lineTo(...P(x, y)) : ctx.moveTo(...P(x, y))));
       ctx.closePath();
-      ctx.fillStyle = r.kind === 'cut' ? 'rgba(240,100,91,.28)' : 'rgba(139,143,168,.35)';
+      ctx.fillStyle = r.kind === 'cut' ? 'rgba(255,90,82,.26)' : 'rgba(154,160,174,.32)';
       ctx.fill();
-      ctx.strokeStyle = r.kind === 'cut' ? '#f0645b' : '#8b8fa8';
+      ctx.strokeStyle = r.kind === 'cut' ? '#ff5a52' : '#9aa0ae';
       ctx.stroke();
       if (opts.labels && r.label) {
         const xs = r.polygon.map((p) => p[0]), ys = r.polygon.map((p) => p[1]);
         const [cx, cy] = P((Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2);
-        ctx.fillStyle = '#e8eaf0'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#e6e8ee'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(r.label.slice(0, 18), cx, cy);
       }
     }
     if (opts.origin !== false) {
-      ctx.fillStyle = '#e8eaf0';
+      ctx.fillStyle = '#e6e8ee';
       ctx.beginPath(); ctx.arc(...P(0, 0), 3, 0, Math.PI * 2); ctx.fill();
     }
     return { P, toIn, scale };
