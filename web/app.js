@@ -200,7 +200,8 @@ function fillStock() {
   const prev = els.stock.value || state.savedSheet || '';
   const sheets = RosSheets.sheets().filter((s) => s.status === 'active');
   els.stock.replaceChildren(...sheets.map((s) => new Option(
-    `${s.id}: ${materialName(s.material)} ${s.thickness}", ${Math.round(RosSheets.freeFraction(s) * 100)}% free`, s.id)));
+    `${s.id}: ${materialName(s.material)} ${s.thickness}", ${(s.sheet_regions || []).length
+      ? `partly used, ${Math.round(RosSheets.freeFraction(s) * 100)}% free` : 'full sheet'}`, s.id)));
   els.noSheets.classList.toggle('hidden', sheets.length > 0);
   els.stock.disabled = sheets.length === 0;
   const keep = sheets.some((s) => s.id === prev);

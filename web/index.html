@@ -255,7 +255,13 @@
               <select id="f-material"><option value="">All materials</option></select></label>
             <label class="field inline"><span>Thickness</span>
               <select id="f-thickness"></select></label>
-            <label class="check"><input id="f-used" type="checkbox"> Include used-up sheets</label>
+            <label class="field inline"><span>Condition</span>
+              <select id="f-cond">
+                <option value="">Any</option>
+                <option value="full">Full sheets (nothing cut or marked)</option>
+                <option value="started">Partly used</option>
+              </select></label>
+            <label class="check" title="Set a sheet to Finished under Sheet details when nothing else can fit on it."><input id="f-used" type="checkbox"> Also show finished sheets (nothing else fits)</label>
           </fieldset>
 
           <p id="sheet-count" class="hint"></p>
@@ -298,6 +304,7 @@
               <button id="ed-close" class="btn small" type="button" aria-label="Close sheet">Close</button>
             </div>
             <div class="ed-canvas-wrap"><canvas id="ed-canvas" aria-label="Sheet drawing"></canvas></div>
+            <p id="ed-condition" class="hint"></p>
             <p class="hint legend-line"><span class="swatch blocked"></span> used, measured by hand
               <span class="swatch cut"></span> parts RosCAM recorded as cut</p>
 
@@ -321,8 +328,8 @@
             <div class="ed-footer">
               <label class="field inline"><span>Status</span>
                 <select id="ed-status" class="needs-editor">
-                  <option value="active">Active</option>
-                  <option value="used_up">Used up</option>
+                  <option value="active">Active: parts can still fit</option>
+                  <option value="used_up">Finished: nothing else fits</option>
                 </select>
               </label>
               <label class="field wide"><span>Notes</span><input id="ed-notes" maxlength="200"></label>
