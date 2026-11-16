@@ -13,6 +13,9 @@ for milled holes, pockets and the outline with tabs) plus a setup sheet.
   stock-top Z zero, G83 expansion, and preflight checks.
 - `roscam_config.yaml` - machine, tool library, materials/thicknesses and tab sizes.
 - `tests/test_roscam.py` - RosCAM tests; `tests/fixtures/make_roscam_plate.py` builds the test plate.
+- `web/` - the static web app (runs roscam.py in the browser via Pyodide); `web/nest/` - nesting
+  engine adapted from SVGnest (MIT; keep its license file and headers); `supabase/` - sheet
+  inventory schema. `uv run python web/build.py` assembles `dist/`.
 
 RosCAM conventions (differ from upstream PenguinCAM):
 - **Z0 is the TOP of the stock** (PenguinCAM's internal frame is Z0 at the spoilboard;

@@ -129,6 +129,18 @@ select:disabled { opacity: .5; }
   overflow-wrap: anywhere;
 }
 
+/* Parts + nesting */
+.parts { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.parts th, .parts td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.parts th { color: var(--muted); font-weight: 500; font-size: 13px; }
+.parts td.name { overflow-wrap: anywhere; }
+.parts input.qty { width: 72px; }
+.parts .part-err { color: var(--danger); font-size: 12px; display: block; }
+.parts .part-busy { color: var(--muted); font-size: 12px; }
+.nest-bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.linklike { background: none; border: none; padding: 0; font: inherit; color: var(--accent-text);
+            text-decoration: underline; cursor: pointer; }
+
 /* Screens */
 .views { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-top: 4px; }
 .view-tab { padding: 10px 14px 8px; background: none; border: none; border-bottom: 2px solid transparent;

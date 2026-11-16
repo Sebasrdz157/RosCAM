@@ -11,10 +11,12 @@ let running = false;
 let deadline = 0;
 let lastImprovedGen = 0;
 let patience = 25;
+let runId = 0;     // echoed on every message so the page can ignore an old search
+let loopToken = 0; // a new start makes any still-scheduled old loop stop
 
 function snapshot() {
   return {
-    best: nester.best, generation: nester.generationCount, evaluated: nester.evaluated,
+    run: runId, best: nester.best, generation: nester.generationCount, evaluated: nester.evaluated,
     utilization: nester.utilization(),
   };
 }
@@ -25,8 +27,8 @@ function finish(reason) {
   self.postMessage({ type: 'done', reason, ...snapshot() });
 }
 
-function loop() {
-  if (!running) return;
+function loop(token) {
+  if (!running || token !== loopToken) return;
   const sliceEnd = Date.now() + 40;
   try {
     while (Date.now() < sliceEnd) {
@@ -40,26 +42,28 @@ function loop() {
     }
   } catch (err) {
     running = false;
-    self.postMessage({ type: 'error', message: String(err && err.message || err) });
+    self.postMessage({ type: 'error', run: runId, message: String(err && err.message || err) });
     return;
   }
-  setTimeout(loop, 0);
+  setTimeout(() => loop(token), 0);
 }
 
 self.onmessage = (e) => {
   const msg = e.data;
   if (msg.type === 'start') {
+    running = false;
+    runId = msg.run || 0;
     try {
       nester = new RosNester({ bin: msg.bin, obstacles: msg.obstacles, parts: msg.parts, angles: msg.angles });
     } catch (err) {
-      self.postMessage({ type: 'error', message: String(err && err.message || err) });
+      self.postMessage({ type: 'error', run: runId, message: String(err && err.message || err) });
       return;
     }
     running = true;
     lastImprovedGen = 0;
     patience = msg.patienceGenerations || 25;
     deadline = Date.now() + (msg.timeLimitMs || 20000);
-    loop();
+    loop(++loopToken);
   } else if (msg.type === 'stop') {
     finish('stopped');
   }

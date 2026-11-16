@@ -70,6 +70,23 @@ self.onmessage = async (event) => {
       result = toJs(roscam.web_generate.callKwargs(bytes, args.filename, args.material, args.thickness,
                                                    overrides, args.rotation, { sheet, placement }));
       for (const p of [bytes, overrides, sheet, placement]) if (p) p.destroy();
+    } else if (type === 'part_info') {
+      const bytes = pyodide.toPy(new Uint8Array(args.bytes));
+      result = toJs(roscam.web_part_info(bytes, args.filename, args.material, args.thickness));
+      bytes.destroy();
+    } else if (type === 'nest_setup') {
+      const sheet = pyodide.toPy(args.sheet);
+      result = toJs(roscam.web_nest_setup(sheet));
+      sheet.destroy();
+    } else if (type === 'generate_sheet') {
+      const files = pyodide.toPy(args.files.map((f) => ({ name: f.name, bytes: new Uint8Array(f.bytes) })));
+      const sheet = pyodide.toPy(args.sheet);
+      const placements = pyodide.toPy(args.placements);
+      const overrides = pyodide.toPy(args.overrides || {});
+      const unplaced = pyodide.toPy(args.unplaced || []);
+      result = toJs(roscam.web_generate_sheet(files, args.material, args.thickness, sheet, placements,
+                                              overrides, unplaced));
+      for (const p of [files, sheet, placements, overrides, unplaced]) p.destroy();
     } else {
       throw new Error(`Unknown request ${type}`);
     }

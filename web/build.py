@@ -15,6 +15,7 @@ DIST = os.path.join(ROOT, 'dist')
 
 WEB_FILES = ['index.html', 'roscam.css', 'app.js', 'worker.js', 'viewer.js', 'config.js', 'db.js',
              'sheets.js']
+NEST_FILES = ['nest-worker.js', 'nester.js', 'clipper.js', 'geometryutil.js', 'LICENSE-SVGnest.txt']
 PY_FILES = ['roscam.py', 'frc_cam_postprocessor.py', 'team_config.py', 'gcode_hygiene.py',
             'dxf_geometry.py', 'roscam_config.yaml']
 
@@ -25,6 +26,9 @@ def build(dest=DIST):
     os.makedirs(os.path.join(dest, 'py'))
     for name in WEB_FILES:
         shutil.copy2(os.path.join(WEB, name), os.path.join(dest, name))
+    os.makedirs(os.path.join(dest, 'nest'))
+    for name in NEST_FILES:
+        shutil.copy2(os.path.join(WEB, 'nest', name), os.path.join(dest, 'nest', name))
     for name in PY_FILES:
         shutil.copy2(os.path.join(ROOT, name), os.path.join(dest, 'py', name))
     return dest
