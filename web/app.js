@@ -3,8 +3,8 @@
 'use strict';
 
 // Drilling in warm colors, milling in cool ones; each bit gets its own.
-const DRILL_COLORS = ['#f0645b', '#d29922', '#f778ba', '#ff9e64', '#e3b341'];
-const MILL_COLORS = ['#58a6ff', '#3fb950', '#a371f7', '#39c5cf', '#e8eaf0'];
+const DRILL_COLORS = ['#ff5a52', '#d29922', '#f778ba', '#ff9e64', '#e3b341'];
+const MILL_COLORS = ['#58a6ff', '#3fb950', '#a371f7', '#39c5cf', '#e6e8ee'];
 const RAPID_COLOR = '#6e7681';
 const PART_FILL = 'rgba(88,166,255,.22)';
 const MILL = 'mill';
@@ -268,7 +268,10 @@ function renderParts() {
       if (v !== p.quantity) { p.quantity = v; refresh(); }
     });
     qtyCell.append(qty);
-    const rm = Object.assign(document.createElement('button'), { type: 'button', className: 'btn small', textContent: 'Remove' });
+    const rm = Object.assign(document.createElement('button'), {
+      type: 'button', className: 'btn icon ghost remove', textContent: '\u00d7', title: `Remove ${p.name}`,
+    });
+    rm.setAttribute('aria-label', `Remove ${p.name}`);
     rm.addEventListener('click', () => { state.parts = state.parts.filter((x) => x !== p); refresh(); });
     const rmCell = document.createElement('td');
     rmCell.append(rm);
@@ -439,6 +442,8 @@ function hideOutputs() {
 function hideResults() {
   els.result.classList.add('hidden');
   els.nestBar.classList.add('hidden');
+  // The holes table and the preview live in their own panels, so hide them too.
+  for (const el of [els.holesWrap, els.previewWrap]) el.classList.add('hidden');
   hideOutputs();
 }
 
@@ -454,6 +459,13 @@ function showOnlyError(message) {
 
 function fillList(ul, items) {
   ul.replaceChildren(...items.map((t) => Object.assign(document.createElement('li'), { textContent: t })));
+  if (ul === els.warnings) {
+    // A long list of warnings would push the programs out of view: fold it, open when short.
+    const wrap = $('warnings-wrap'), n = items.length;
+    wrap.classList.toggle('hidden', n === 0);
+    $('warnings-sum').textContent = `${n} warning${n === 1 ? '' : 's'}`;
+    wrap.open = n <= 2;
+  }
 }
 
 // Hole sizes across every part (times how many of each), for the table before programs exist.
@@ -717,7 +729,9 @@ function drawPreview(res) {
   const dpr = window.devicePixelRatio || 1;
   const cssW = canvas.clientWidth || 800;
   const [sx, sy] = res ? res.stock_size : [sheetData.width, sheetData.height];
-  const cssH = Math.max(220, Math.min(cssW * (sy / sx), 640));
+  // As tall as the sheet's shape needs, but no taller than the window has room for.
+  const room = Math.max(360, window.innerHeight - 170);
+  const cssH = Math.max(220, Math.min(cssW * (sy / sx), room));
   canvas.style.aspectRatio = 'auto';
   canvas.style.height = `${cssH}px`;
   canvas.width = Math.round(cssW * dpr);
@@ -743,17 +757,17 @@ function drawPreview(res) {
 
   // Sheet and its used areas
   const sheet = RosSheets.get(res ? res.sheet_id : sheetData.id);
-  ctx.fillStyle = '#1a1d23';
+  ctx.fillStyle = '#1a1e25';
   ctx.fillRect(ox, oy - sy * scale, sx * scale, sy * scale);
   for (const r of (sheet && sheet.sheet_regions) || []) {
     poly(r.polygon);
-    ctx.fillStyle = r.kind === 'cut' ? 'rgba(240,100,91,.28)' : 'rgba(139,143,168,.35)';
+    ctx.fillStyle = r.kind === 'cut' ? 'rgba(255,90,82,.26)' : 'rgba(154,160,174,.32)';
     ctx.fill();
   }
-  ctx.strokeStyle = '#8b8fa8';
+  ctx.strokeStyle = '#9aa0ae';
   ctx.lineWidth = 1;
   ctx.strokeRect(ox, oy - sy * scale, sx * scale, sy * scale);
-  ctx.fillStyle = '#8b8fa8';
+  ctx.fillStyle = '#9aa0ae';
   ctx.beginPath(); ctx.arc(...P(0, 0), 3, 0, Math.PI * 2); ctx.fill();
 
   // Parts: from the programs if they exist, else from the layout being searched

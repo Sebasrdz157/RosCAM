@@ -8,172 +8,219 @@
   <link rel="stylesheet" href="roscam.css?v=dev">
 </head>
 <body>
-  <main class="page">
-    <header class="head">
+  <header class="appbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
       <h1>RosCAM</h1>
-      <p class="intro">
-        Drop DXFs of flat parts (each part's top face), pick a sheet, and RosCAM arranges them on it clear of
-        its used areas, then writes one program per bit: drills first, then the 1/4" end mill for bigger holes,
-        pockets and the outlines with tabs. The CAM runs in your browser; DXFs are never uploaded.
-      </p>
-      <div id="engine" class="engine" aria-live="polite">
-        <span class="spinner" aria-hidden="true"></span>
-        <span id="engine-text">Loading the CAM engine. The first visit takes about 15 seconds.</span>
-      </div>
-      <nav class="views" aria-label="RosCAM screens">
-        <button type="button" class="view-tab" data-view="programs" aria-pressed="true">Make programs</button>
-        <button type="button" class="view-tab" data-view="sheets" aria-pressed="false">Sheets</button>
-        <button type="button" class="view-tab" data-view="tools" aria-pressed="false">Tools</button>
-      </nav>
-    </header>
+    </div>
+    <nav class="views" aria-label="RosCAM screens">
+      <button type="button" class="view-tab" data-view="programs" aria-pressed="true">Make programs</button>
+      <button type="button" class="view-tab" data-view="sheets" aria-pressed="false">Sheets</button>
+      <button type="button" class="view-tab" data-view="tools" aria-pressed="false">Tools</button>
+    </nav>
+    <div id="engine" class="engine" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <span class="engine-dot" aria-hidden="true"></span>
+      <span id="engine-text">Loading the CAM engine. The first visit takes about 15 seconds.</span>
+    </div>
+  </header>
 
-    <div id="view-programs" class="view">
-    <section class="setup">
-      <label id="drop" class="drop" tabindex="0">
-        <input id="file" type="file" accept=".dxf" multiple hidden>
-        <span class="drop-title" id="drop-title">Drop DXF files here</span>
-        <span class="drop-sub" id="drop-sub">one file per part, or click to choose them</span>
-      </label>
+  <main class="page">
+    <div id="view-programs" class="view workspace">
+      <!-- Left: inputs -->
+      <aside class="panel panel-left" aria-label="Job inputs">
+        <section class="panel-section setup">
+          <h2 class="section-title">Job</h2>
+          <label id="drop" class="drop" tabindex="0">
+            <input id="file" type="file" accept=".dxf" multiple hidden>
+            <span class="drop-icon" aria-hidden="true"></span>
+            <span class="drop-title" id="drop-title">Drop DXF files here</span>
+            <span class="drop-sub" id="drop-sub">one file per part, or click to choose them</span>
+          </label>
 
-      <div class="fields">
-        <label class="field">
-          <span>Sheet</span>
-          <select id="stock" disabled></select>
-        </label>
-        <p id="no-sheets" class="hint hidden">No active sheets yet.
-          <button id="go-sheets" class="linklike" type="button">Add one on the Sheets screen</button>.</p>
-        <label class="field">
-          <span>Turning parts</span>
-          <select id="rotation" disabled>
-            <option value="any">Allowed (best fit)</option>
-            <option value="none">Keep as drawn</option>
-          </select>
-        </label>
-        <p class="hint">Material and thickness come from the sheet.</p>
-      </div>
-    </section>
-
-    <section id="parts-wrap" class="block card hidden">
-      <h2>Parts</h2>
-      <p class="hint">Set how many of each you need. RosCAM arranges them all on the sheet, clear of its used areas.</p>
-      <div class="table-scroll">
-        <table class="parts">
-          <thead><tr><th>Part</th><th>Size</th><th>How many</th><th></th></tr></thead>
-          <tbody id="parts-list"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section id="result" class="result hidden" aria-live="polite">
-      <div id="status" class="status"></div>
-      <div id="nest-bar" class="nest-bar hidden">
-        <span id="nest-status" class="hint"></span>
-        <button id="nest-stop" class="btn small" type="button">Stop and use this layout</button>
-        <button id="nest-again" class="btn small hidden" type="button">Try for a better layout</button>
-      </div>
-      <ul id="errors" class="messages errors"></ul>
-      <ul id="warnings" class="messages warnings"></ul>
-
-      <div id="holes-wrap" class="block hidden">
-        <h2>Holes</h2>
-        <p class="hint">RosCAM picks a tool for each hole size. Change one here and the programs update.</p>
-        <div class="table-scroll">
-          <table class="holes">
-            <thead><tr><th>Size</th><th>Count</th><th>Made with</th></tr></thead>
-            <tbody id="holes"></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div id="preview-wrap" class="block hidden">
-        <h2>Preview</h2>
-        <div class="legend" id="legend"></div>
-        <div class="zoom-bar">
-          <button id="zoom-in" class="btn small" type="button" aria-label="Zoom in">+</button>
-          <button id="zoom-out" class="btn small" type="button" aria-label="Zoom out">&minus;</button>
-          <button id="zoom-fit" class="btn small" type="button">Fit</button>
-          <span class="hint">Scroll or pinch to zoom, drag to move around.</span>
-        </div>
-        <canvas id="preview" role="img" aria-label="Toolpath preview"></canvas>
-        <p class="hint" id="stock-note"></p>
-        <div id="cut-actions" class="actions hidden">
-          <button id="mark-cut" class="btn needs-editor" type="button">Mark as cut on sheet</button>
-          <span id="cut-msg" class="hint"></span>
-        </div>
-        <div id="cut-pick" class="cut-pick card hidden">
-          <p class="hint">Tick the parts that were actually cut. Their areas become off limits on the sheet.</p>
-          <div class="actions">
-            <button id="cut-all" class="btn small" type="button">Tick all</button>
-            <button id="cut-none" class="btn small" type="button">Untick all</button>
+          <div class="fields">
+            <label class="field">
+              <span>Sheet</span>
+              <select id="stock" disabled></select>
+            </label>
+            <p id="no-sheets" class="hint hidden">No active sheets yet.
+              <button id="go-sheets" class="linklike" type="button">Add one on the Sheets screen</button>.</p>
+            <label class="field">
+              <span>Turning parts</span>
+              <select id="rotation" disabled>
+                <option value="any">Allowed (best fit)</option>
+                <option value="none">Keep as drawn</option>
+              </select>
+            </label>
+            <p class="hint">Material and thickness come from the sheet.</p>
           </div>
-          <div id="cut-list" class="cut-list"></div>
-          <div class="actions">
-            <button id="cut-save" class="btn primary" type="button">Record ticked parts</button>
-            <button id="cut-cancel" class="btn" type="button">Cancel</button>
+        </section>
+
+        <section id="parts-wrap" class="panel-section block hidden">
+          <h2 class="section-title">Parts</h2>
+          <p class="hint">Set how many of each you need. RosCAM arranges them all on the sheet, clear of its used areas.</p>
+          <div class="table-scroll">
+            <table class="parts data-table">
+              <thead><tr><th>Part</th><th>Size</th><th>Qty</th><th><span class="sr-only">Remove</span></th></tr></thead>
+              <tbody id="parts-list"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <details id="holes-wrap" class="panel-section block collapsible hidden" open>
+          <summary class="section-title">Holes</summary>
+          <p class="hint">RosCAM picks a tool for each hole size. Change one here and the programs update.</p>
+          <div class="table-scroll">
+            <table class="holes data-table">
+              <thead><tr><th>Size</th><th>Count</th><th>Made with</th></tr></thead>
+              <tbody id="holes"></tbody>
+            </table>
+          </div>
+        </details>
+
+        <details class="panel-section collapsible about">
+          <summary class="section-title">How RosCAM works</summary>
+          <p class="intro hint">
+            Drop DXFs of flat parts (each part's top face), pick a sheet, and RosCAM arranges them on it clear of
+            its used areas, then writes one program per bit: drills first, then the 1/4" end mill for bigger holes,
+            pockets and the outlines with tabs. The CAM runs in your browser; DXFs are never uploaded.
+          </p>
+        </details>
+      </aside>
+
+      <!-- Centre: the sheet -->
+      <section class="canvas-col" aria-label="Sheet">
+        <div id="preview-wrap" class="stage block hidden">
+          <div class="stage-head">
+            <h2>Sheet preview</h2>
+            <div class="legend" id="legend"></div>
+          </div>
+          <div class="stage-canvas">
+            <canvas id="preview" role="img" aria-label="Toolpath preview"></canvas>
+            <div class="zoom-bar toolbar" role="toolbar" aria-label="Preview zoom">
+              <button id="zoom-in" class="btn icon" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+              <button id="zoom-out" class="btn icon" type="button" aria-label="Zoom out" title="Zoom out">&minus;</button>
+              <button id="zoom-fit" class="btn small" type="button" title="Show the whole sheet">Fit</button>
+            </div>
+          </div>
+          <div class="stage-foot">
+            <span class="hint" id="stock-note"></span>
+            <span class="hint">Scroll or pinch to zoom, drag to move around.</span>
           </div>
         </div>
-      </div>
+        <div class="canvas-empty" aria-hidden="true">
+          <div class="canvas-empty-sheet"></div>
+          <p class="canvas-empty-title">No parts yet</p>
+          <p class="hint">Drop DXF files in the Job panel and pick a sheet. The layout shows up here.</p>
+        </div>
 
-      <div id="sim-wrap" class="block hidden">
-        <h2>Simulation</h2>
-        <p class="hint">The path the router takes, one color per bit (warm colors drill, cool colors mill).
-          Bright is already cut, faded is still to come, grey lines are rapid moves. Drag to rotate, scroll to
-          zoom, middle-drag to pan.</p>
-        <div class="sim-bar">
-          <label class="field inline">
-            <span>Show</span>
-            <select id="sim-program"></select>
-          </label>
-          <button id="sim-play" class="btn" type="button">Play</button>
-          <button id="sim-restart" class="btn" type="button">Restart</button>
-          <label class="field inline">
-            <span>Speed</span>
-            <select id="sim-speed">
-              <option value="30">Slow</option>
-              <option value="150" selected>Normal</option>
-              <option value="600">Fast</option>
-              <option value="3000">Very fast</option>
-            </select>
-          </label>
-          <button id="sim-reset" class="btn" type="button">Reset view</button>
+        <div id="sim-wrap" class="stage block hidden">
+          <div class="stage-head">
+            <h2>Simulation</h2>
+            <div id="sim-legend" class="legend"></div>
+          </div>
+          <div class="sim-bar toolbar-row">
+            <label class="field inline">
+              <span>Show</span>
+              <select id="sim-program"></select>
+            </label>
+            <div class="btn-group">
+              <button id="sim-play" class="btn" type="button">Play</button>
+              <button id="sim-restart" class="btn" type="button">Restart</button>
+            </div>
+            <label class="field inline">
+              <span>Speed</span>
+              <select id="sim-speed">
+                <option value="30">Slow</option>
+                <option value="150" selected>Normal</option>
+                <option value="600">Fast</option>
+                <option value="3000">Very fast</option>
+              </select>
+            </label>
+            <button id="sim-reset" class="btn" type="button">Reset view</button>
+          </div>
+          <div id="sim-stage" class="sim-stage">
+            <canvas id="sim-canvas" aria-label="3D toolpath simulation"></canvas>
+            <p id="sim-fallback" class="sim-fallback hidden"></p>
+          </div>
+          <input id="sim-scrubber" class="sim-scrubber" type="range" min="0" max="0" value="0" aria-label="Move">
+          <div class="sim-labels">
+            <span id="sim-label"></span>
+            <code id="sim-op"></code>
+          </div>
+          <p class="hint">The path the router takes, one color per bit (warm colors drill, cool colors mill).
+            Bright is already cut, faded is still to come, grey lines are rapid moves. Drag to rotate, scroll to
+            zoom, middle-drag to pan.</p>
         </div>
-        <div id="sim-legend" class="legend"></div>
-        <div id="sim-stage" class="sim-stage">
-          <canvas id="sim-canvas" aria-label="3D toolpath simulation"></canvas>
-          <p id="sim-fallback" class="sim-fallback hidden"></p>
-        </div>
-        <input id="sim-scrubber" class="sim-scrubber" type="range" min="0" max="0" value="0" aria-label="Move">
-        <div class="sim-labels">
-          <span id="sim-label"></span>
-          <code id="sim-op"></code>
-        </div>
-      </div>
+      </section>
 
-      <div id="programs-wrap" class="block hidden">
-        <h2>Programs</h2>
-        <ol id="programs" class="programs"></ol>
-        <div class="actions">
-          <button id="zip" class="btn primary" type="button">Download all (.zip)</button>
-        </div>
-        <div class="actions one-part">
-          <label class="field inline"><span>Or just one part</span><select id="one-part"></select></label>
-          <button id="one-part-zip" class="btn" type="button">Download that part (.zip)</button>
-          <span id="one-part-msg" class="hint"></span>
-        </div>
-        <p class="hint">"Just one part" makes programs for that part alone, in the same spot on the sheet.</p>
-        <p class="hint">Convert each <code>.nc</code> file with the Converter before running it, and dry-run above the stock
-          if anything looks unfamiliar.</p>
-      </div>
+      <!-- Right: the result -->
+      <aside class="panel panel-right" aria-label="Programs">
+        <section id="result" class="result hidden" aria-live="polite">
+          <div class="panel-section">
+            <h2 class="section-title">Result</h2>
+            <div id="status" class="status"></div>
+            <div id="nest-bar" class="nest-bar hidden">
+              <span id="nest-status" class="hint"></span>
+              <div class="btn-row">
+                <button id="nest-stop" class="btn small" type="button">Stop and use this layout</button>
+                <button id="nest-again" class="btn small hidden" type="button">Try for a better layout</button>
+              </div>
+            </div>
+            <ul id="errors" class="messages errors"></ul>
+            <details id="warnings-wrap" class="msg-group hidden">
+              <summary id="warnings-sum"></summary>
+              <ul id="warnings" class="messages warnings"></ul>
+            </details>
+          </div>
 
-      <details id="sheet-wrap" class="block hidden">
-        <summary>Setup sheet</summary>
-        <pre id="sheet" class="sheet"></pre>
-      </details>
-    </section>
+          <div id="programs-wrap" class="panel-section block hidden">
+            <h2 class="section-title">Programs</h2>
+            <p class="hint">Run them in this order, swapping the bit and re-zeroing Z between programs.</p>
+            <ol id="programs" class="programs"></ol>
+            <button id="zip" class="btn primary block-btn" type="button">Download all (.zip)</button>
+            <div class="one-part">
+              <label class="field"><span>Or just one part</span><select id="one-part"></select></label>
+              <button id="one-part-zip" class="btn block-btn" type="button">Download that part (.zip)</button>
+              <span id="one-part-msg" class="hint"></span>
+              <p class="hint">"Just one part" makes programs for that part alone, in the same spot on the sheet.</p>
+            </div>
+            <p class="hint note">Convert each <code>.nc</code> file with the Converter before running it, and dry-run above the stock
+              if anything looks unfamiliar.</p>
+          </div>
+
+          <div id="cut-actions" class="panel-section cut-actions hidden">
+            <h2 class="section-title">After the job</h2>
+            <button id="mark-cut" class="btn block-btn needs-editor" type="button">Mark as cut on sheet</button>
+            <span id="cut-msg" class="hint"></span>
+          </div>
+          <div id="cut-pick" class="panel-section cut-pick hidden">
+            <p class="hint">Tick the parts that were actually cut. Their areas become off limits on the sheet.</p>
+            <div class="btn-row">
+              <button id="cut-all" class="btn small" type="button">Tick all</button>
+              <button id="cut-none" class="btn small" type="button">Untick all</button>
+            </div>
+            <div id="cut-list" class="cut-list"></div>
+            <div class="btn-row">
+              <button id="cut-save" class="btn primary" type="button">Record ticked parts</button>
+              <button id="cut-cancel" class="btn" type="button">Cancel</button>
+            </div>
+          </div>
+
+          <details id="sheet-wrap" class="panel-section collapsible hidden">
+            <summary class="section-title">Setup sheet</summary>
+            <pre id="sheet" class="sheet"></pre>
+          </details>
+        </section>
+        <div class="panel-placeholder">
+          <h2 class="section-title">Result</h2>
+          <p class="hint">Programs, downloads and the setup sheet appear here once parts are on a sheet.</p>
+        </div>
+      </aside>
     </div>
 
-    <div id="view-sheets" class="view hidden">
-      <section id="account-card" class="block card hidden">
+    <div id="view-sheets" class="view split-view hidden">
+      <section id="account-card" class="block panel account-card hidden">
         <div class="account">
           <form id="signin-form" class="signin">
             <span class="hint">Anyone can look. Sign in to add or change sheets.</span>
@@ -191,7 +238,7 @@
       <p id="sheets-msg" class="sheets-msg" aria-live="polite"></p>
 
       <div class="sheets-layout">
-        <section class="block">
+        <section class="block panel list-panel">
           <div class="sheets-head">
             <div>
               <h2>Your sheets</h2>
@@ -215,7 +262,7 @@
           <p id="sheet-empty" class="hint hidden"></p>
         </section>
 
-        <section id="sheet-panel" class="block card">
+        <section id="sheet-panel" class="block panel inspector">
           <div id="panel-empty" class="panel-empty">
             <h2>No sheet selected</h2>
             <p class="hint">Click a sheet on the left to see it and mark its used areas, or click
@@ -285,10 +332,10 @@
         </section>
       </div>
     </div>
-    <div id="view-tools" class="view hidden">
+    <div id="view-tools" class="view split-view hidden">
       <p id="tools-msg" class="sheets-msg" aria-live="polite"></p>
       <div class="sheets-layout">
-        <section class="block">
+        <section class="block panel list-panel">
           <div class="sheets-head">
             <div>
               <h2>Your bits</h2>
@@ -300,7 +347,7 @@
           <div id="tools-groups"></div>
         </section>
 
-        <section id="tool-panel" class="block card">
+        <section id="tool-panel" class="block panel inspector">
           <div id="tool-empty" class="panel-empty">
             <h2>No bit selected</h2>
             <p class="hint">Click a bit on the left to see its numbers, or click <strong>+ Add a bit</strong>.</p>

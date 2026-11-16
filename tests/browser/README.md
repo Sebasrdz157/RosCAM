@@ -15,10 +15,13 @@ curl -sSL https://github.com/pyodide/pyodide/releases/download/0.27.2/pyodide-0.
   | tar -xjf - --wildcards 'pyodide/pyodide*' 'pyodide/python_stdlib.zip' 'pyodide/numpy-*' \
     'pyodide/shapely-*' 'pyodide/PyYAML-*' 'pyodide/micropip-*' 'pyodide/packaging-*' \
     'pyodide/pyclipper-*' 'pyodide/typing_extensions-*' 'pyodide/pyparsing-*' 'pyodide/fonttools-*'
+# ezdxf wheel for pyodide_repro.js / pyodide_stress.js (the browser gets it from PyPI via micropip)
+mkdir -p $S/pyodide/wheels && (cd $S/pyodide/wheels && pip download ezdxf==1.4.5 --no-deps --only-binary=:all: \
+  --python-version 3.12 --platform any)
 # three.js r128 + OrbitControls
 mkdir -p $S/three && cd $S/three && npm pack three@0.128.0 && tar -xzf three-0.128.0.tgz
 # test DXFs used by nesttest/toolstest
-mkdir -p $S/parts   # plate.dxf, small.dxf, bracket.dxf, rack.dxf (see tests/test_roscam.py fixtures)
+uv run python tests/browser/make_parts.py $S/parts   # plate.dxf, small.dxf, bracket.dxf, rack.dxf
 ```
 
 ## Run
@@ -26,6 +29,7 @@ mkdir -p $S/parts   # plate.dxf, small.dxf, bracket.dxf, rack.dxf (see tests/tes
 ```bash
 uv run python web/build.py && (cd dist && python3 -m http.server 8765 &)
 node tests/browser/nesttest.js $S      # nesting, programs, zoom, one-part download, mark as cut
+node tests/browser/nesttest.js $S empty  # no sheets yet: the 'add one' hint
 node tests/browser/toolstest.js $S     # Tools screen + a rack that needs a 1/8" end mill
 node tests/browser/sheettest.js $S     # Sheets screen
 node tests/browser/simtest.js $S       # 3D simulation

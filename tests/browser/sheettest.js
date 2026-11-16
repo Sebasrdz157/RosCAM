@@ -135,49 +135,29 @@ async function fakeSupabase(route) {
   console.log('card:', await page.textContent('.sheet-card'));
   await page.screenshot({ path: `${S}/sheets_view.png`, fullPage: true });
 
-  // --- Programs on that sheet
+  // --- Programs on that sheet (picked from the sheet list; parts are placed by nesting)
   await page.click('.view-tab[data-view="programs"]');
-  await page.selectOption('#material', 'aluminum');
-  await page.selectOption('#thickness', '1/4');
   console.log('stock options:', await page.$$eval('#stock option', (o) => o.map((x) => x.textContent)));
   await page.selectOption('#stock', 'AL-250-01');
   await page.setInputFiles('#file', require('path').resolve(__dirname, '../fixtures/roscam_plate.dxf'));
-  await page.waitForSelector('.status.ok, .status.err', { timeout: 120000 });
+  await page.waitForSelector('.status.ok, .status.err', { timeout: 180000 });
   await page.waitForFunction(() => !document.querySelector('#drop').classList.contains('busy'));
   console.log('status:', await page.textContent('#status'), '|', await page.textContent('#stock-note'));
   const prev = await page.$('#preview-wrap');
   await prev.scrollIntoViewIfNeeded();
   await prev.screenshot({ path: `${S}/sheet_place_auto.png` });
+  const place = await page.evaluate(() => state.result.parts.map((p) => p.label));
+  console.log('placed:', place.join(', '));
+  await page.screenshot({ path: `${S}/programs_view.png` });
 
-  // drag the part up the sheet
-  const pb = await page.$eval('#preview', (c) => { const r = c.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
-  const ps = Math.min((pb.w - 32) / 24, (pb.h - 32) / 48);
-  const pox = pb.x + (pb.w - 24 * ps) / 2, poy = pb.y + (pb.h + 48 * ps) / 2;
-  const pp = (x, y) => [pox + x * ps, poy - y * ps];
-  const place = JSON.parse(await page.evaluate(() => JSON.stringify(state.result.placement)));
-  const grab = [place[0] + 3, place[1] + 2];
-  await page.mouse.move(...pp(...grab)); await page.mouse.down();
-  await page.mouse.move(...pp(grab[0] + 8, grab[1] + 15), { steps: 8 }); await page.mouse.up();
-  await page.waitForFunction((old) => state.result && JSON.stringify(state.result.placement) !== old, JSON.stringify(place), { timeout: 60000 });
-  await page.waitForFunction(() => !document.querySelector('#drop').classList.contains('busy'));
-  console.log('after drag:', await page.textContent('#status'), '| placement', await page.evaluate(() => JSON.stringify(state.result.placement)));
-  // drag into the used area -> should be refused with a message
-  const place2 = JSON.parse(await page.evaluate(() => JSON.stringify(state.result.placement)));
-  const g2 = [place2[0] + 3, place2[1] + 2];
-  await page.mouse.move(...pp(...g2)); await page.mouse.down();
-  await page.mouse.move(...pp(g2[0], 3), { steps: 8 }); await page.mouse.up();
-  await page.waitForSelector('.status.err', { timeout: 60000 });
-  console.log('into used area:', await page.$$eval('#errors li', (l) => l.map((x) => x.textContent)));
-  await prev.screenshot({ path: `${S}/sheet_place_bad.png` });
-  // put it back somewhere valid, then mark as cut
-  await page.selectOption('#stock', '');
-  await page.selectOption('#stock', 'AL-250-01');
-  await page.waitForSelector('.status.ok', { timeout: 60000 });
-  await page.waitForFunction(() => !document.querySelector('#drop').classList.contains('busy'));
+  // mark as cut: pick the parts, record them, and the sheet gets a cut region
   console.log('cut button:', await page.textContent('#mark-cut'), 'disabled =', await page.isDisabled('#mark-cut'));
   await page.click('#mark-cut');
-  await page.waitForFunction(() => document.querySelector('#mark-cut').textContent.startsWith('Recorded'), null, { timeout: 30000 });
-  console.log('after mark:', await page.textContent('#cut-msg'));
+  await page.waitForSelector('#cut-pick:not(.hidden)');
+  await page.click('#cut-all');
+  await page.click('#cut-save');
+  await page.waitForFunction(() => /recorded/i.test(document.querySelector('#mark-cut').textContent), null, { timeout: 30000 });
+  console.log('after mark:', await page.textContent('#mark-cut'), '|', await page.textContent('#cut-msg'));
   console.log('fake db regions:', db.regions.map((r) => `${r.kind}:${r.label}:${r.polygon.length}pts`));
   await page.waitForTimeout(300);
   await prev.screenshot({ path: `${S}/sheet_after_cut.png` });

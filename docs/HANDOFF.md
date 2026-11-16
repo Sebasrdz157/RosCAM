@@ -58,11 +58,10 @@ linearizes them). It reproduces the shop's VCarve files byte-for-byte.
 
 ## Branch state (update when it changes)
 
-- `main`: through nesting + cut-gap spacing (PR #6).
-- `cache-bust`: version-stamped URLs. Included in `tools-zoom`.
-- `tools-zoom`: preview zoom, colors per bit, one-part download, pick-what-was-cut, tool library
-  (Tools screen + `tools` table), smaller end mills for details, Clipper geometry, worker auto-restart.
-  **User must re-run `supabase/schema.sql`** to create the `tools` table.
+- `main`: through the tool library and smaller end mills (PR #7, `tools-zoom`).
+- `claude/kind-hamilton-q6h7fb`: the professional UI redesign (below), plus fixed `sheettest.js` /
+  `simtest.js` (they still used the removed Material/Thickness fields) and `tests/browser/make_parts.py`.
+  **User must re-run `supabase/schema.sql`** to create the `tools` table if not done yet.
 
 ## Testing
 
@@ -93,10 +92,18 @@ linearizes them). It reproduces the shop's VCarve files byte-for-byte.
 - Pyodide's pure wheels (typing-extensions, pyparsing, fonttools) must come from
   `loadPackage`, not micropip; `micropip` installs ezdxf from PyPI.
 
-## Next task: professional UI redesign (requested, not started)
+## UI design (done on `claude/kind-hamilton-q6h7fb`; keep new work consistent with it)
 
-The user wants the web app on par with professional technical UIs, **dark theme kept, accent
-`#c80000`**. Research summary and brief:
+The web app follows a professional technical-UI layout, **dark theme, accent `#c80000`**.
+What was built: a sticky top app bar (brand, screen tabs, engine status pill); Make programs is a
+three-column workspace (Job / Parts / collapsible Holes on the left, the sheet preview with a floating
+zoom toolbar in the middle and the simulation under it, the Result panel on the right with a folded
+warnings list, programs, downloads, mark as cut, setup sheet). Under 1280px the result panel moves
+under the preview (the centre column uses `display: contents`); under 860px everything is one column.
+Sheets and Tools are list panel + inspector panel. All tokens live in `:root` of `web/roscam.css`;
+colors drawn on canvases (`app.js`, `sheets.js`) use the same values. Text colors were measured
+(WCAG AA on bg and all three surfaces); focus rings use `--focus` (`#ff5a52`) because the accent is
+under 3:1 on dark surfaces. The original brief, for reference:
 
 **Principles** (Material dark theme guidance and common dark-UI practice):
 dark gray base, not pure black; show elevation with lighter surfaces, not shadows; restrained
