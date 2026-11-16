@@ -54,6 +54,21 @@ obstacles. `roscam.generate_sheet_job` re-checks every layout (edges, used areas
 before writing programs: each drill program covers every copy, and the end mill cuts every
 copy's holes and pockets before any outline.
 
+## Tool library and small details
+
+The **Tools** screen lists the built-in bits (`roscam_config.yaml`) and lets you add more
+(stored in Supabase, table `tools`). Added drills are matched to holes like the built-in
+ones. Added end mills smaller than the 1/4" profile end mill are used automatically for
+what the 1/4" can't reach: gaps narrower than it on the outside (rack teeth), tight spots
+and narrow slots inside cutouts, and holes too small for it. RosCAM picks the largest end
+mill that reaches each detail and cuts those details in layers (the bit's depth per pass)
+before the 1/4" end mill runs, while the part is still held all round. Leftover thinner
+than 0.02" (a round bit's fillet in a sharp inside corner) is ignored. If no bit in the
+library reaches a detail, the page warns that it will be left uncut.
+
+That geometry uses Clipper (`pyclipper`) because the browser's GEOS build can fail fatally
+when growing and shrinking cutter-shaped outlines.
+
 ## Sheet inventory (Supabase)
 
 The **Sheets** screen keeps track of every sheet of stock by the ID written on it, and the
@@ -62,7 +77,8 @@ areas already used (measured by hand, or recorded automatically with **Mark as c
 areas (drag it to move it) and zeros the programs on the sheet's lower-left corner.
 
 Data lives in Supabase (`web/config.js` has the project URL and publishable key). Setup:
-Supabase dashboard -> **SQL Editor** -> paste `supabase/schema.sql` -> **Run** (safe to re-run).
+Supabase dashboard -> **SQL Editor** -> paste `supabase/schema.sql` -> **Run** (safe to re-run;
+it also creates the `tools` table for the tool library).
 
 Editing is currently **open**: anyone using RosCAM can add and change sheets, no sign-in.
 To require sign-in later: create editor users under Authentication -> Users (Auto Confirm),

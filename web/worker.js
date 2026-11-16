@@ -13,6 +13,10 @@ const PY_FILES = [
 const PYODIDE_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 
 let ready = null;
+let lastPyodide = null;
+function pyodideIsDead() {
+  try { return !lastPyodide || lastPyodide.runPython('1') !== 1; } catch (_) { return true; }
+}
 
 async function boot() {
   try {
@@ -25,7 +29,7 @@ async function boot() {
   pyodide.setStdout({ batched: () => {} });
   // ezdxf's dependencies all ship with Pyodide; load them from there, then ezdxf itself
   // (a pure-Python wheel) from PyPI.
-  await pyodide.loadPackage(['numpy', 'shapely', 'pyyaml', 'micropip',
+  await pyodide.loadPackage(['numpy', 'shapely', 'pyclipper', 'pyyaml', 'micropip',
                              'typing-extensions', 'pyparsing', 'fonttools']);
   const micropip = pyodide.pyimport('micropip');
   await micropip.install(`ezdxf==${EZDXF_VERSION}`);
@@ -38,6 +42,7 @@ async function boot() {
     pyodide.FS.writeFile(`${dir}/${name}`, await res.text());
   }
   pyodide.runPython(`import sys; sys.path.insert(0, ${JSON.stringify(dir)}); import roscam`);
+  lastPyodide = pyodide;
   return pyodide;
 }
 
@@ -99,6 +104,9 @@ self.onmessage = async (event) => {
     }
     self.postMessage({ id, ok: true, result });
   } catch (err) {
-    self.postMessage({ id, ok: false, error: String(err && err.message || err) });
+    const message = String(err && err.message || err);
+    // A fatal Pyodide error leaves the interpreter unusable: tell the page to start a new worker.
+    const fatal = /fatal error|GIL not held/i.test(message) || (ready && pyodideIsDead());
+    self.postMessage({ id, ok: false, error: message, fatal });
   }
 };

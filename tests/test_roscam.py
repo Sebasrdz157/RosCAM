@@ -14,7 +14,9 @@ import zipfile
 
 import ezdxf
 import yaml
-from shapely.geometry import Point, Polygon
+from shapely import affinity
+from shapely.geometry import LineString, Point, Polygon
+from shapely.ops import unary_union
 
 import roscam
 from tests.fixtures.make_roscam_plate import build as build_plate
@@ -210,7 +212,7 @@ class HolePlanTests(unittest.TestCase):
         _, errors, _ = self._plan([0.203125], {'0.2031': roscam.MILL})
         self.assertIn('cannot be milled', errors[0])
         _, errors, _ = self._plan([0.5], {'0.5000': 'no_such_drill'})
-        self.assertIn('unknown drill', errors[0])
+        self.assertIn('unknown tool', errors[0])
 
     def test_same_size_as_endmill_warns(self):
         groups, errors, warnings = self._plan([0.25])
@@ -247,12 +249,24 @@ class GcodeHelperTests(unittest.TestCase):
                  'G3 X1.0000 Y0.0000 I-1.0000 J0 F144  ; flat circle']
         out = roscam.linearize_helices(lines)
         moves = [l for l in out if l.startswith('G1 X')]
-        self.assertEqual(len(moves), 36)
         self.assertEqual(moves[-1], 'G1 X1.0000 Y0.0000 Z-0.1000')
-        self.assertIn('G1 X0.0000 Y1.0000 Z-0.0250', moves)  # quarter turn CCW, quarter depth
         self.assertEqual(out[-1], lines[-1])  # flat arc kept as an arc
-        cw = roscam.linearize_helices(['G0 X1 Y0', 'G1 Z0 F30', 'G2 X1 Y0 I-1 J0 Z-0.1 F30'])
-        self.assertIn('G1 X0.0000 Y-1.0000 Z-0.0250', cw)
+        prev = (1.0, 0.0)
+        for i, m in enumerate(moves, 1):       # every chord within 0.001" of the true circle
+            w = roscam._words(m)
+            self.assertAlmostEqual(math.hypot(w['X'], w['Y']), 1.0, places=3)
+            mx, my = (prev[0] + w['X']) / 2, (prev[1] + w['Y']) / 2
+            self.assertLess(1.0 - math.hypot(mx, my), 0.0011)
+            self.assertAlmostEqual(w['Z'], -0.1 * i / len(moves), places=3)
+            prev = (w['X'], w['Y'])
+        self.assertGreater(roscam._words(moves[len(moves) // 4])['Y'], 0.9)   # turning counter-clockwise
+        cw = [l for l in roscam.linearize_helices(['G0 X1 Y0', 'G1 Z0 F30', 'G2 X1 Y0 I-1 J0 Z-0.1 F30'])
+              if l.startswith('G1 X')]
+        self.assertLess(roscam._words(cw[len(cw) // 4])['Y'], -0.9)           # clockwise
+        tiny = [l for l in roscam.linearize_helices(['G0 X0.0150 Y0', 'G1 Z0 F30',
+                                                      'G3 X0.0150 Y0 I-0.0150 J0 Z-0.02 F30'])
+                if l.startswith('G1 X')]
+        self.assertLessEqual(len(tiny), 16)    # a tiny ramp-in circle needs only a few segments
 
     def test_single_plunge_when_no_peck(self):
         moves = roscam._peck_moves(-0.3, 0.1, 0.0, 45)
@@ -718,6 +732,105 @@ process.stdout.write(JSON.stringify({ best: n.best, util: n.utilization() }));
         result, files = self._nest(sheet, [3, 3], angles=[0])
         self.assertTrue(all(p['rotation'] == 0 for p in result['best']['placements']))
         self._check(sheet, result, files)
+
+
+class DetailToolTests(unittest.TestCase):
+    """Details the 1/4" end mill can't reach (rack teeth, narrow slots) go to a smaller end
+    mill from the tool library, cut in layers before the 1/4" end mill runs."""
+
+    EIGHTH = {'id': 'endmill_1_8', 'name': '1/8 end mill', 'type': 'endmill', 'diameter': 0.125,
+              'flute_length': 0.5, 'spindle_speed': 18000, 'feed_rate': 40, 'plunge_rate': 5,
+              'ramp_feed_rate': 15, 'stepdown': 0.02}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        # A 6" rack: 1" tall body with 0.2" teeth on a 0.3" pitch; each gap is 0.18" wide at the
+        # root and 0.22" at the tip: too narrow for a 1/4" end mill, fine for a 1/8" one.
+        # Plus a 0.18" x 1.2" slot.
+        pts = [(0, 0), (6, 0), (6, 1)]
+        x = 6.0
+        while x > 0.3 + 1e-9:
+            pts += [(x - 0.09, 1.0), (x - 0.11, 1.2), (x - 0.19, 1.2), (x - 0.21, 1.0)]
+            x -= 0.3
+        pts += [(0, 1)]
+        doc = ezdxf.new(units=1)
+        msp = doc.modelspace()
+        msp.add_lwpolyline(pts, close=True)
+        msp.add_lwpolyline([(2, 0.3), (3.2, 0.3), (3.2, 0.48), (2, 0.48)], close=True)
+        msp.add_circle((5, 0.5), 0.18 / 2)                      # 0.18" hole: no drill, smaller than 1/4"
+        cls.rack = os.path.join(cls.tmp.name, 'rack.dxf')
+        doc.saveas(cls.rack)
+        cls.outline = Polygon(pts)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def _job(self, library):
+        cfg, _ = roscam.config_with_tools(library)
+        sheet = roscam.Sheet('AL-9', 24, 48)
+        return roscam.generate_sheet_job([roscam.PartFile(self.rack, 'rack')],
+                                         [{'part': 0, 'x': 1, 'y': 1, 'rotation': 0}],
+                                         'aluminum', '1/4', sheet, cfg), cfg
+
+    def test_uses_smaller_end_mill_for_details(self):
+        res, cfg = self._job([self.EIGHTH])
+        self.assertTrue(res.success, res.errors)
+        self.assertEqual([p.tool.id for p in res.programs], ['endmill_1_8', 'endmill_1_4'])
+        detail = res.programs[0]
+        self.assertEqual(res.warnings, [])                       # every detail found a bit
+        self.assertIn('19 details', detail.feature_summary)      # 18 tooth gaps + the narrow slot
+        self.assertIn('mill 1 hole', detail.feature_summary)
+        self.assertIn('details', detail.feature_summary)
+        self.assertIn('(Layer 15 of 15)', detail.gcode)          # 0.289" deep in 0.02" layers
+        self.assertEqual(detail.errors, [])
+        # The 1/8" bit never cuts into the part, and it does clear the gaps between the teeth.
+        part = affinity.translate(self.outline, 1, 1)
+        r = 0.0625
+        runs, run, z = [], [], 1.0          # cutting moves, as connected runs below the stock top
+        x = y = None
+        for line in detail.gcode.splitlines():
+            w = roscam._words(roscam._split_comment(line)[0].upper())
+            z = w.get('Z', z)
+            x, y = w.get('X', x), w.get('Y', y)
+            if x is None or y is None:
+                continue
+            if z < 0:
+                run.append((x, y))
+            elif run:
+                runs.append(run)
+                run = []
+        if run:
+            runs.append(run)
+        inside = unary_union([Polygon([(3, 1.3), (4.2, 1.3), (4.2, 1.48), (3, 1.48)]).buffer(0.01),
+                              Point(6, 1.5).buffer(0.1)])          # the slot and the 0.18" hole, placed
+        near = [[p for p in rr if not inside.contains(Point(p))] for rr in runs]
+        pts = [Point(p) for rr in near for p in rr]
+        self.assertTrue(pts)
+        for pt in pts:                                          # the bit's edge never enters the part
+            self.assertFalse(part.buffer(-1e-3).contains(pt))
+            self.assertGreaterEqual(part.exterior.distance(pt), r - 0.003)
+        gaps = part.buffer(0.125, 32).buffer(-0.125, 32).difference(part)
+        swept = unary_union([LineString(rr).buffer(r, 8) if len(rr) > 1 else Point(rr[0]).buffer(r, 8)
+                             for rr in near if rr])
+        uncut = gaps.difference(swept)
+        # all that's left is the round bit's corner fillets at the roots of the gaps (slivers)
+        slivers_only = [g for g in getattr(uncut, 'geoms', [uncut])
+                        if g.area > 1e-6 and not g.buffer(-roscam.SLIVER).is_empty]
+        self.assertEqual(slivers_only, [], f'{uncut.area:.4f} sq in of the gaps left uncut')
+        self.assertGreater(swept.intersection(gaps).area / gaps.area, 0.9)
+        self.assertLess(len(detail.gcode.splitlines()), 60000)
+
+    def test_warns_without_a_small_end_mill(self):
+        res, _ = self._job([])
+        self.assertFalse(res.success)                             # the 0.2" hole can't be made at all
+        self.assertIn('smaller than every end mill', ' '.join(res.errors))
+        res2, _ = self._job([{**self.EIGHTH, 'id': 'drill_0_18', 'name': '0.18 drill', 'type': 'drill',
+                              'diameter': 0.18, 'flute_length': 1, 'plunge_rate': 30, 'spindle_speed': 7000}])
+        self.assertTrue(res2.success, res2.errors)
+        self.assertTrue(any('no smaller end mill' in w for w in res2.warnings))
+        self.assertEqual([p.tool.id for p in res2.programs], ['drill_0_18', 'endmill_1_4'])
 
 
 class WebApiTests(unittest.TestCase):

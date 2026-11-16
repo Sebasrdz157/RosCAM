@@ -52,29 +52,47 @@ function libraryTools() {
 }
 
 // ---- CAM worker (Python) ---------------------------------------------------------
-const worker = new Worker('worker.js?v=dev');
+let worker = null;
 let nextId = 1;
 const pending = new Map();
-worker.onmessage = (e) => {
-  const { id, ok, result, error } = e.data;
-  const p = pending.get(id);
-  if (!p) return;
-  pending.delete(id);
-  // An old cached worker.js doesn't know newer requests: say what to do about it.
-  if (!ok && /^Unknown request/.test(error)) {
-    p.reject(new Error('RosCAM was updated and this browser still has part of the old version. Reload the page (Ctrl+Shift+R).'));
-    return;
-  }
-  ok ? p.resolve(result) : p.reject(new Error(error));
-};
-// If the worker itself dies (e.g. the Pyodide CDN is unreachable), fail every waiting
-// request instead of leaving the page spinning forever.
-worker.onerror = (e) => {
-  e.preventDefault();
-  const msg = e.message || 'the CAM engine stopped unexpectedly';
-  for (const p of pending.values()) p.reject(new Error(msg));
-  pending.clear();
-};
+function startWorker() {
+  worker = new Worker('worker.js?v=dev');
+  worker.onmessage = (e) => {
+    const { id, ok, result, error, fatal } = e.data;
+    const p = pending.get(id);
+    if (fatal) {
+      // The Python engine crashed: start a fresh one so the page keeps working.
+      console.warn('CAM engine crashed; restarting it', error);
+      worker.terminate();
+      for (const [otherId, other] of pending) {          // nothing else will answer on the dead one
+        if (otherId !== id) other.reject(new Error('the CAM engine restarted; try again'));
+      }
+      for (const otherId of [...pending.keys()]) if (otherId !== id) pending.delete(otherId);
+      startWorker();
+    }
+    if (!p) return;
+    pending.delete(id);
+    // An old cached worker.js doesn't know newer requests: say what to do about it.
+    if (!ok && /^Unknown request/.test(error)) {
+      p.reject(new Error('RosCAM was updated and this browser still has part of the old version. Reload the page (Ctrl+Shift+R).'));
+      return;
+    }
+    if (!ok && fatal) {
+      p.reject(new Error(`the CAM engine crashed on this part (${error.split('\n')[0].slice(0, 160)}). It has been restarted; please report the DXF that caused it.`));
+      return;
+    }
+    ok ? p.resolve(result) : p.reject(new Error(error));
+  };
+  // If the worker itself dies (e.g. the Pyodide CDN is unreachable), fail every waiting
+  // request instead of leaving the page spinning forever.
+  worker.onerror = (e) => {
+    e.preventDefault();
+    const msg = e.message || 'the CAM engine stopped unexpectedly';
+    for (const p of pending.values()) p.reject(new Error(msg));
+    pending.clear();
+  };
+}
+startWorker();
 function call(type, args) {
   const id = nextId++;
   return new Promise((resolve, reject) => {
@@ -543,7 +561,9 @@ els.cutSave.addEventListener('click', async () => {
 function toolLabel(id) {
   if (id === MILL) return `Mill with the ${state.options.endmill.name}`;
   const d = state.options.drills.find((x) => x.id === id);
-  return d ? d.name : 'Cannot be made';
+  if (d) return d.name;
+  const e = (state.options.endmills || []).find((x) => x.id === id);
+  return e ? `Mill with the ${e.name}` : 'Cannot be made';
 }
 
 function renderHoles(groups) {
@@ -558,7 +578,9 @@ function renderHoles(groups) {
     const sel = document.createElement('select');
     sel.setAttribute('aria-label', `Tool for ${g.diameter.toFixed(4)} inch holes`);
     const choices = [...state.options.drills.map((d) => d.id)];
-    if (g.diameter >= state.options.endmill.diameter - 0.002) choices.push(MILL);
+    for (const e of state.options.endmills || [state.options.endmill]) {       // every end mill that fits
+      if (g.diameter >= e.diameter - 0.002) choices.push(e.id === state.options.endmill.id ? MILL : e.id);
+    }
     if (!g.tool) sel.add(new Option('Cannot be made - pick a tool', ''));
     for (const id of choices) {
       const auto = id === g.auto_tool ? ' (auto)' : '';

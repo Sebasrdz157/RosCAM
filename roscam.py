@@ -32,9 +32,11 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+import pyclipper
 import yaml
 from shapely import affinity
-from shapely.geometry import Point, Polygon, box
+from shapely.geometry import LineString, Point, Polygon, box
+from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
@@ -385,16 +387,28 @@ def match_drill(diameter: float, cfg: ShopConfig) -> Optional[Tool]:
     return best
 
 
+def _endmill_for_hole(diameter: float, cfg: ShopConfig) -> Optional[Tool]:
+    """The largest end mill that fits in a hole (the profile end mill if it fits)."""
+    for t in cfg.endmills:                      # largest first
+        if diameter >= t.diameter - 0.002:
+            return t
+    return None
+
+
 def plan_holes(circles: List[dict], cfg: ShopConfig,
                overrides: Optional[Dict[str, str]] = None) -> Tuple[List[HoleGroup], List[str], List[str]]:
-    """Group circles by size and assign each group a drill, the end mill, or nothing.
+    """Group circles by size and assign each group a drill, an end mill, or nothing.
 
-    overrides maps a group key ('0.2031') to a tool id or 'mill'.
-    Returns (groups, errors, warnings).
+    A group's tool is a drill id, MILL (the profile end mill), the id of a smaller end mill
+    from the tool library, or None (cannot be made). overrides maps a group key ('0.2031')
+    to any of those. Returns (groups, errors, warnings).
     """
     overrides = overrides or {}
     errors, warnings = [], []
     endmill = cfg.profile_tool
+
+    def mill_id(t: Tool) -> str:
+        return MILL if t.id == endmill.id else t.id
 
     # Group by size (to 0.1 thou) so DXF rounding doesn't split one hole size in two.
     by_size: Dict[str, List[dict]] = {}
@@ -408,41 +422,40 @@ def plan_holes(circles: List[dict], cfg: ShopConfig,
         centers = [tuple(c['center']) for c in members]
 
         drill = match_drill(diameter, cfg)
-        if drill:
-            auto = drill.id
-        elif diameter >= endmill.diameter - 0.002:
-            auto = MILL
-        else:
-            auto = None
+        mill = _endmill_for_hole(diameter, cfg)
+        auto = drill.id if drill else (mill_id(mill) if mill else None)
         group = HoleGroup(key=key, diameter=diameter, centers=centers, tool_id=auto, auto_tool_id=auto)
 
-        if key in overrides and overrides[key] != auto:
-            choice = overrides[key]
-            if choice == MILL:
-                group.tool_id = MILL
-                group.note = 'override: mill with end mill'
-            elif choice in cfg.tools and cfg.tools[choice].is_drill:
+        choice = overrides.get(key)
+        if choice is not None and choice != auto:
+            tool = endmill if choice == MILL else cfg.tools.get(choice)
+            if tool is None:
+                errors.append(f'Override for {key}" holes names unknown tool {choice!r}.')
+            elif tool.is_drill:
                 group.tool_id = choice
-                group.note = f'override: {cfg.tools[choice].name}'
-                diff = cfg.tools[choice].diameter - diameter
+                group.note = f'override: {tool.name}'
+                diff = tool.diameter - diameter
                 if abs(diff) > cfg.drill_match_tolerance:
                     warnings.append(f'{group.count} hole(s) of {diameter:.4f}" will be drilled with the '
-                                    f'{cfg.tools[choice].name}, which is {abs(diff):.4f}" '
+                                    f'{tool.name}, which is {abs(diff):.4f}" '
                                     f'{"larger" if diff > 0 else "smaller"} than the hole.')
+            elif diameter < tool.diameter - 0.002:
+                errors.append(f'{group.count} hole(s) of {diameter:.4f}" are smaller than the '
+                              f'{tool.name} and cannot be milled with it.')
+                group.tool_id = None
             else:
-                errors.append(f'Override for {key}" holes names unknown drill {choice!r}.')
+                group.tool_id = mill_id(tool)
+                group.note = f'override: mill with {tool.name}'
 
-        if group.tool_id == MILL and diameter < endmill.diameter - 0.002:
-            errors.append(f'{group.count} hole(s) of {diameter:.4f}" are smaller than the '
-                          f'{endmill.name} and cannot be milled. Drill them instead.')
-            group.tool_id = None
-        elif group.tool_id is None and key not in overrides:
-            errors.append(f'{group.count} hole(s) of {diameter:.4f}" match no drill in the tool library '
-                          f'and are smaller than the {endmill.name}. Add a drill of that size to '
-                          f'roscam_config.yaml, or change the hole size in CAD.')
-        if group.tool_id == MILL and abs(diameter - endmill.diameter) <= 0.002:
-            warnings.append(f'{group.count} hole(s) of {diameter:.4f}" are the same size as the end mill, '
-                            f'so the end mill will plunge straight down to make them.')
+        if group.tool_id is None and choice is None:
+            smallest = cfg.endmills[-1] if cfg.endmills else endmill
+            errors.append(f'{group.count} hole(s) of {diameter:.4f}" match no drill and are smaller than every '
+                          f'end mill (smallest: {smallest.name}). Add a drill or a small end mill of that size '
+                          f'on the Tools screen, or change the hole size in CAD.')
+        mill_tool = endmill if group.tool_id == MILL else cfg.tools.get(group.tool_id or '')
+        if mill_tool is not None and not mill_tool.is_drill and abs(diameter - mill_tool.diameter) <= 0.002:
+            warnings.append(f'{group.count} hole(s) of {diameter:.4f}" are the same size as the {mill_tool.name}, '
+                            f'so it will plunge straight down to make them.')
         groups.append(group)
 
     return groups, errors, warnings
@@ -552,12 +565,14 @@ def shift_z(lines: List[str], dz: float) -> List[str]:
 _Z_RE = re.compile(r'Z\s*([-+]?(?:\d+\.?\d*|\.\d+))')
 
 
-def linearize_helices(lines: List[str], max_step_deg: float = 10.0) -> List[str]:
+def linearize_helices(lines: List[str], max_step_deg: float = 30.0, tolerance: float = 0.001) -> List[str]:
     """Replace helical arcs (G2/G3 that also move Z) with short straight G1 moves.
 
     The Richauto converter keeps helical arcs but warns that VCarve never writes
     them, so ramps into holes and pockets are written as straight segments instead,
-    like VCarve's output. Flat arcs (no Z change) are left alone.
+    like VCarve's output. Flat arcs (no Z change) are left alone. Each straight segment stays
+    within `tolerance` of the true arc (and turns at most max_step_deg), so a tiny ramp-in
+    circle needs only a few segments.
     """
     out = []
     x = y = z = None
@@ -586,7 +601,11 @@ def linearize_helices(lines: List[str], max_step_deg: float = 10.0) -> List[str]
                 sweep = (a1 - a0) % (2 * math.pi) or 2 * math.pi
             else:
                 sweep = -((a0 - a1) % (2 * math.pi) or 2 * math.pi)
-            n = max(4, int(math.ceil(abs(math.degrees(sweep)) / max_step_deg)))
+            # largest angle whose chord stays within `tolerance` of the arc
+            step = math.radians(max_step_deg)
+            if r > tolerance:
+                step = min(step, 2 * math.acos(1 - tolerance / r))
+            n = max(4, int(math.ceil(abs(sweep) / step)))
             note = comment.strip()
             out.append(f'(Ramp {"CCW" if motion == 3 else "CW"} to Z{nz:.4f} as {n} straight moves)'
                        if not note else f'(Ramp to Z{nz:.4f}, {n} straight moves)')
@@ -766,9 +785,11 @@ class JobResult:
         return buf.getvalue()
 
 
-def _team_config_for(cfg: ShopConfig, material: Material, thickness: Thickness) -> TeamConfig:
-    """Express the RosCAM shop settings as a PenguinCAM TeamConfig for the end mill pass."""
-    em = material.tool(cfg.profile_tool)
+def _team_config_for(cfg: ShopConfig, material: Material, thickness: Thickness,
+                     endmill: Optional[Tool] = None) -> TeamConfig:
+    """Express the RosCAM shop settings as a PenguinCAM TeamConfig for an end mill pass
+    (the profile end mill unless another one is given)."""
+    em = material.tool(endmill or cfg.profile_tool)
     preset = {
         'name': material.name,
         'spindle_speed': em.spindle_speed,
@@ -1238,6 +1259,196 @@ def nest_setup(sheet: Sheet, cfg: Optional[ShopConfig] = None) -> dict:
     return {'bin': bin_rect, 'obstacles': obstacles}
 
 
+# ---- details the profile end mill can't reach ---------------------------------------------
+#
+# This geometry is done with Clipper (pyclipper: integer coordinates, so no floating-point
+# topology failures) rather than shapely/GEOS. Growing and shrinking these cutter-shaped
+# outlines tripped GEOS 3.12's buffer ("depth mismatch") in the browser, where that error is
+# not catchable and kills the whole engine. Shapes are lists of polygons, each polygon a
+# list of integer paths: the outer ring first, then its holes.
+
+# Leftover thinner than this is ignored: every round cutter leaves a little in a sharp
+# inside corner, and chasing that with ever smaller bits isn't what's wanted.
+SLIVER = 0.02
+_CS = 1_000_000                      # Clipper units per inch
+
+
+def _c_paths(polys) -> list:
+    return [path for poly in polys for path in poly]
+
+
+def _c_tree(tree) -> list:
+    """PolyTree -> [[outer, hole, ...], ...]."""
+    out = []
+
+    def walk(node):
+        for child in node.Childs:
+            if child.IsHole:
+                continue
+            out.append([child.Contour] + [h.Contour for h in child.Childs if h.IsHole])
+            for h in child.Childs:              # islands inside holes
+                walk(h)
+    walk(tree)
+    return [p for p in out if len(p[0]) >= 3]
+
+
+def _c_from_shapely(g) -> list:
+    polys = []
+    for part in getattr(g, 'geoms', [g]):
+        if part.geom_type != 'Polygon' or part.is_empty:
+            continue
+        # Clipper reads a clockwise ring as a hole (offsetting would shrink it), so outer
+        # rings must run counter-clockwise and holes clockwise.
+        part = orient(part, sign=1.0)
+        rings = [part.exterior] + list(part.interiors)
+        polys.append([[(int(round(x * _CS)), int(round(y * _CS))) for x, y in r.coords[:-1]] for r in rings])
+    return polys
+
+
+def _c_to_shapely(poly) -> Polygon:
+    rings = [[(x / _CS, y / _CS) for x, y in path] for path in poly]
+    return Polygon(rings[0], rings[1:])
+
+
+def _c_area(poly) -> float:
+    return abs(sum(pyclipper.Area(p) for p in poly)) / (_CS * _CS) if poly else 0.0
+
+
+def _c_offset(polys, distance: float, closed_line: bool = False) -> list:
+    """Grow (or shrink, if negative) polygons by distance inches, rounding the corners.
+    closed_line: offset the rings as lines, giving the band a cutter sweeps along them."""
+    if not polys:
+        return []
+    pco = pyclipper.PyclipperOffset()
+    pco.ArcTolerance = 0.0002 * _CS
+    end = pyclipper.ET_CLOSEDLINE if closed_line else pyclipper.ET_CLOSEDPOLYGON
+    pco.AddPaths(_c_paths(polys), pyclipper.JT_ROUND, end)
+    return _c_tree(pco.Execute2(distance * _CS))
+
+
+def _c_op(op, subject, clip) -> list:
+    if not subject:
+        return []
+    if not clip:                         # nothing to subtract / intersect with
+        return [list(p) for p in subject] if op == pyclipper.CT_DIFFERENCE else []
+    pc = pyclipper.Pyclipper()
+    pc.AddPaths(_c_paths(subject), pyclipper.PT_SUBJECT, True)
+    pc.AddPaths(_c_paths(clip), pyclipper.PT_CLIP, True)
+    return _c_tree(pc.Execute2(op, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
+
+
+def _c_diff(a, b):
+    return _c_op(pyclipper.CT_DIFFERENCE, a, b)
+
+
+def _c_inter(a, b):
+    return _c_op(pyclipper.CT_INTERSECTION, a, b)
+
+
+def _c_union(a, b):
+    polys = a + b
+    if not polys:
+        return []
+    pc = pyclipper.Pyclipper()
+    pc.AddPaths(_c_paths(polys), pyclipper.PT_SUBJECT, True)
+    return _c_tree(pc.Execute2(pyclipper.CT_UNION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
+
+
+def _significant(polys) -> list:
+    """The polygons that are more than a sliver."""
+    return [p for p in polys if _c_area(p) > 1e-6 and _c_offset([p], -SLIVER)]
+
+
+def _out_of_reach(outline, pockets: List, radius: float):
+    """Material a cutter of this radius can't remove: between narrow outside features (e.g.
+    rack teeth) and in tight spots inside cutouts.
+
+    Returns ([(region, allowed)], indexes of cutouts the cutter can't enter at all), where
+    `allowed` is the area around the region that gets cut away anyway (the big end mill's
+    slot outside the part, or the rest of the cutout), so a smaller bit may run into it:
+    a tooth gap's open side is where the big end mill cuts, not a wall."""
+    regions, whole = [], []
+    part = _c_from_shapely(Polygon(outline.exterior.coords))
+    # Outside: the cutter's centre runs on the outline grown by its radius; sweeping the
+    # cutter along that path gives what it removes, and whatever is left between the path
+    # and the part (e.g. between rack teeth) is out of reach.
+    grown = _c_offset(part, radius)
+    if grown:
+        path = max(grown, key=_c_area)
+        swept = _c_offset([[path[0]]], radius, closed_line=True)
+        slot_zone = _c_diff(_c_offset(part, 2 * radius), part)
+        regions += [(g, slot_zone) for g in _significant(_c_diff(_c_diff([[path[0]]], part), swept))]
+    for i, pocket in enumerate(pockets):
+        cp = _c_from_shapely(pocket)
+        inner = _c_offset(cp, -radius)
+        if not inner or sum(_c_area(p) for p in inner) < 0.001:
+            whole.append(i)
+            regions += [(p, cp) for p in cp]
+            continue
+        regions += [(g, cp) for g in _significant(_c_diff(cp, _c_offset(inner, radius)))]
+    return regions, whole
+
+
+def _grown(region, allowed, radius: float) -> list:
+    """The region plus a bit's width of the area that gets cut away anyway."""
+    return _c_union(_c_inter(_c_offset([region], 2 * radius), allowed), [region])
+
+
+def _reaches(region, allowed, radius: float) -> bool:
+    """Can a cutter of this radius clear the whole region (nothing but slivers left)?"""
+    inner = _c_offset(_grown(region, allowed, radius), -radius)
+    if not inner:
+        return False
+    return not _significant(_c_diff([region], _c_offset(inner, radius)))
+
+
+def _detail_tool(region, allowed, candidates: List[Tool]) -> Tuple[Optional[Tool], bool]:
+    """The largest end mill that clears the region; else the smallest that clears some of it.
+    Returns (tool, clears_all)."""
+    for t in candidates:                       # largest first
+        if _reaches(region, allowed, t.diameter / 2):
+            return t, True
+    for t in reversed(candidates):             # smallest first
+        if _c_offset(_grown(region, allowed, t.diameter / 2), -t.diameter / 2):
+            return t, False
+    return None, False
+
+
+def _detail_pockets(region_polys, radius: float) -> List[Polygon]:
+    """Split a (grown) detail region into pockets the bit can clear one at a time: one per
+    separate place its centre can go."""
+    out = []
+    for inner in _c_offset(region_polys, -radius):
+        if _c_area(inner) < 0.001:
+            continue       # only a sliver of room for the bit's centre: nothing worth chasing
+        for sub in _c_inter(_c_offset([inner], radius), region_polys):
+            if _c_area(sub) >= 1e-5:
+                out.append(_c_to_shapely(sub))
+    return out
+
+
+def _layered_pocket(pp: FRCPostProcessor, region, stepdown: float) -> List[str]:
+    """Clear a region in depth layers of at most `stepdown` (PenguinCAM clears a pocket at
+    full depth, too much for a small end mill). Each layer ramps in from just above the
+    floor the last layer left."""
+    top, bottom = pp.material_top, pp.cut_depth
+    clearance = pp.ramp_start_clearance
+    layers = max(1, int(math.ceil((top - bottom) / max(stepdown, 1e-3) - 1e-9)))
+    lines = []
+    try:
+        for k in range(1, layers + 1):
+            pp.material_top = top - (top - bottom) * (k - 1) / layers    # ramp in from the last floor,
+            pp.ramp_start_clearance = clearance if k == 1 else 0.005     # starting just above it
+            pp.cut_depth = top - (top - bottom) * k / layers
+            pp._pending_clearance_rapid = True
+            lines.append(f'(Layer {k} of {layers})')
+            lines.append(f'G0 Z{pp.retract_height:.4f}')
+            lines.extend(pp._generate_pocket_gcode_from_polygon(region))
+    finally:
+        pp.material_top, pp.cut_depth, pp.ramp_start_clearance = top, bottom, clearance
+    return lines
+
+
 def generate_sheet_job(parts: List[PartFile], placements: List[dict], material: str, thickness,
                        sheet: Sheet, cfg: Optional[ShopConfig] = None,
                        overrides: Optional[Dict[str, str]] = None,
@@ -1338,10 +1549,39 @@ def generate_sheet_job(parts: List[PartFile], placements: List[dict], material: 
     if errs:
         return result
     milled = {g.key for g in groups if g.tool_id == MILL}
+    small_holes: Dict[str, List[Tuple[str, dict]]] = {}      # end mill id -> [(label, circle)]
+    small_group = {g.key: g.tool_id for g in groups if g.tool_id not in (None, MILL) and not cfg.tools[g.tool_id].is_drill}
     for (label, pp, outline), (perimeter, holes) in zip(copies, per_copy):
+        for c in holes:
+            tid = small_group.get(group_key(c['diameter']))
+            if tid:
+                small_holes.setdefault(tid, []).append((label, c))
         pp.circles = [c for c in pp.circles if c is perimeter or group_key(c['diameter']) in milled]
         pp.classify_holes()
         pp.identify_perimeter_and_pockets()
+
+    # Details the profile end mill can't reach go to the largest smaller end mill that can.
+    candidates = [mat.tool(t) for t in cfg.endmills if t.diameter < endmill.diameter - 1e-6]
+    details: Dict[str, List[Tuple[str, object]]] = {}         # end mill id -> [(label, region)]
+    for label, pp, outline in copies:
+        pockets = [Polygon(p).buffer(0) for p in pp.pockets]
+        regions, whole = _out_of_reach(outline, pockets, endmill.diameter / 2)
+        if whole:                                              # cutouts the 1/4" can't enter at all
+            pp.pockets = [p for i, p in enumerate(pp.pockets) if i not in set(whole)]
+        for region, allowed in regions:
+            tool, clears_all = _detail_tool(region, allowed, candidates)
+            c = _c_to_shapely(region).centroid
+            if tool is None:
+                result.warnings.append(
+                    f'{label}: a detail near X {c.x:.2f}" Y {c.y:.2f}" is too tight for the {endmill.name} and '
+                    f'there is no smaller end mill in the tool library, so it will be left uncut. '
+                    f'Add one on the Tools screen.')
+                continue
+            if not clears_all:
+                result.warnings.append(
+                    f'{label}: a detail near X {c.x:.2f}" Y {c.y:.2f}" is too tight even for the {tool.name}; '
+                    f'it will be cut as far as that bit reaches.')
+            details.setdefault(tool.id, []).append((label, _grown(region, allowed, tool.diameter / 2)))   # Clipper polys
 
     route_pp = copies[0][1]
     planned = []
@@ -1351,6 +1591,41 @@ def generate_sheet_job(parts: List[PartFile], placements: List[dict], material: 
             bottom = -(thk.value + cfg.overcut + drill.tip_length)
             planned.append((drill, _drill_body(drill, _route(route_pp, centers), bottom, cfg), bottom,
                             f'drill {plural(len(centers), "hole")}'))
+
+    # Smaller end mills next (largest first), before the profile end mill, while every part
+    # is still held all round by the sheet: details out of the big bit's reach, and holes
+    # assigned to them.
+    for tool in candidates:
+        if tool.id not in details and tool.id not in small_holes:
+            continue
+        pp_t = FRCPostProcessor(material_thickness=thk.value, tool_diameter=tool.diameter, units='inch',
+                                config=_team_config_for(cfg, mat, thk, tool))
+        pp_t.apply_material_preset(mat.id)
+        lines, n_areas, n_small = [], 0, 0
+        for label, c in small_holes.get(tool.id, []):
+            (cx, cy), dia = c['center'], c['diameter']
+            pp_t._pending_clearance_rapid = True
+            lines += ['', f'(=== {label}: {dia:.4f} hole ===)', f'G0 Z{pp_t.retract_height:.4f}']
+            lines += pp_t._generate_hole_gcode(cx, cy, dia, needs_peck_drill=dia < pp_t.min_millable_hole)
+            n_small += 1
+        for label, region in details.get(tool.id, []):
+            for part_region in _detail_pockets(region, tool.diameter / 2):
+                c = part_region.centroid
+                lines += ['', f'(=== {label}: detail at X{c.x:.2f} Y{c.y:.2f} ===)']
+                lines += _layered_pocket(pp_t, part_region, tool.stepdown)
+                n_areas += 1
+        if pp_t.errors:
+            result.errors.extend(dict.fromkeys(f'{tool.name}: {e}' for e in pp_t.errors))   # once each
+            continue
+        body = shift_z(expand_canned_cycles(lines, top=thk.value), -thk.value)
+        bits = []
+        if n_small:
+            bits.append(f'mill {plural(n_small, "hole")}')
+        if n_areas:
+            bits.append(f'{plural(n_areas, "detail")} the {endmill.name.split(",")[0]} cannot reach')
+        planned.append((tool, linearize_helices(body), -(thk.value + cfg.overcut), ', '.join(bits)))
+    if result.errors:
+        return result
 
     # End mill: every copy's holes and pockets first, then every outline (the part
     # stays held by the sheet while its inside is cut).
