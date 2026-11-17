@@ -1,18 +1,13 @@
 const { chromium } = require('playwright');
 const fs = require('fs'), path = require('path');
 const S = process.argv[2];
+const { fakeParts } = require('./fakeparts');
 
-// Stand-in for Supabase: one active sheet, nothing else.
-const SB = 'https://ugapgbvcnizrirzynhbw.supabase.co';
-const SHEETS = [{ id: 'AL-250-01', material: 'aluminum', thickness: '1/4', width: 24, height: 48, status: 'active',
-                  notes: '', created_at: '2026-01-01', sheet_regions: [] }];
-function fakeSupabase(route) {
-  const req = route.request(), url = new URL(req.url());
-  const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' };
-  if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
-  const body = req.method() === 'GET' && url.pathname.endsWith('/sheets') ? SHEETS : [];
-  route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body), headers: cors });
-}
+const db = {
+  sheets: [{ id: 'AL-250-01', material: 'aluminum', thickness: '1/4', width: 24, height: 48, status: 'active',
+             notes: '', created_at: '2026-01-01' }],
+  regions: [],
+};
 
 function serve(route, file, type) {
   if (!fs.existsSync(file)) { console.log('missing', file); return route.abort(); }
@@ -34,7 +29,7 @@ function serve(route, file, type) {
   await context.route('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js',
     (r) => serve(r, path.join(S, 'three/package/examples/js/controls/OrbitControls.js'), 'text/javascript'));
 
-  await context.route(`${SB}/**`, fakeSupabase);
+  await fakeParts(context, { db, tools: [] });
 
   const page = await context.newPage();
   page.on('pageerror', (e) => console.log('pageerror:', e.message));

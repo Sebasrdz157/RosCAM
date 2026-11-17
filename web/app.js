@@ -47,7 +47,7 @@ const state = {
   view: { zoom: 1, cx: null, cy: null, sheet: null },   // preview zoom and centre (inches)
 };
 
-// Extra bits from the Tools screen (Supabase), passed to the CAM engine with each job.
+// Extra bits from the Tools screen (tool library), passed to the CAM engine with each job.
 function libraryTools() {
   return window.RosTools ? RosTools.tools() : [];
 }
@@ -131,6 +131,48 @@ nestWorker.onerror = (e) => {
   state.nesting = false;
   showOnlyError('The nesting engine could not start. Reload the page to try again.');
 };
+
+// ---- sign-in (Auth0, the Parts Tracker's login) ------------------------------------
+(function bindSignIn() {
+  const gate = $('signin-gate'), btn = $('signin-btn'), note = $('signin-msg');
+  const box = $('user-box'), pic = $('user-pic'), name = $('user-name'), role = $('user-role');
+  RosDB.onAuthChange((u) => {
+    gate.classList.toggle('hidden', !!u);
+    box.classList.toggle('hidden', !u);
+    if (u) {
+      name.textContent = u.name || u.email;
+      name.title = u.email;
+      if (u.picture) pic.src = u.picture; else pic.removeAttribute('src');
+      role.classList.toggle('hidden', RosDB.canEdit());
+    }
+    document.querySelectorAll('.needs-editor').forEach((n) => { n.disabled = !RosDB.canEdit(); });
+    refreshCutButton();
+  });
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    note.className = 'hint gate-msg';
+    note.textContent = 'Finish signing in in the window that opened.';
+    try {
+      await RosDB.signIn();
+      note.textContent = '';
+    } catch (err) {
+      note.className = 'hint gate-msg err';
+      note.textContent = /popup/i.test(err.message || '')
+        ? 'The sign-in window was blocked or closed. Allow pop-ups for this site and try again.'
+        : `Sign-in failed: ${err.message}`;
+    }
+    btn.disabled = false;
+  });
+  $('signout-btn').addEventListener('click', () => RosDB.signOut());
+  if (!window.auth0) {
+    // Not served by the Parts Tracker (e.g. the retired GitHub Pages copy): no login, no data.
+    note.innerHTML = 'RosCAM now lives in the Parts Tracker: <a class="linklike" href="https://parts.frc5572.org/cnc/roscam/">parts.frc5572.org/cnc/roscam</a>';
+    btn.disabled = true;
+    gate.classList.remove('hidden');
+    return;
+  }
+  RosDB.restore().then((u) => { if (!u) gate.classList.remove('hidden'); });
+})();
 
 // ---- startup --------------------------------------------------------------------
 call('options').then((opts) => {
@@ -524,7 +566,8 @@ function refreshCutButton() {
   els.markCut.textContent = done === n ? `All recorded on ${res.sheet_id}`
     : done ? `Mark more as cut (${done} of ${n} recorded)` : `Mark as cut on ${res.sheet_id}`;
   els.markCut.disabled = done === n || !RosSheets.canEdit();
-  if (!done) els.cutMsg.textContent = RosSheets.canEdit() ? 'Do this after the job has run.' : 'Sign in on the Sheets screen to record cuts.';
+  if (!done) els.cutMsg.textContent = RosSheets.canEdit() ? 'Do this after the job has run.'
+    : 'Recording cuts takes the Parts Tracker admin or Assignee role.';
   refreshOnePartCut();
 }
 

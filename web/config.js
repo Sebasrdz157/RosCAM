@@ -1,11 +1,8 @@
-// Where the sheet inventory lives (Supabase). The publishable key is meant to be public:
-// what it can do is limited by the database rules in supabase/schema.sql.
+// RosCAM is served by the Parts Tracker (parts.frc5572.org/cnc/roscam/) and uses its Auth0
+// login and its /api/roscam/ endpoints. These match the Parts Tracker board's settings.
 window.ROSCAM_CONFIG = {
-  supabaseUrl: 'https://ugapgbvcnizrirzynhbw.supabase.co',
-  supabaseKey: 'sb_publishable_k0-Dlg_Gs9BilEcrumI77A_NAev4E-l',
-  // false: anyone can add and change sheets, no sign-in (matches supabase/schema.sql).
-  // true: show a sign-in box; run supabase/lock_down.sql so the database enforces it too.
-  requireSignIn: false,
-  // Prefilled on the sign-in form when requireSignIn is true. Must be in public.editors.
-  teamEmail: 'roscam@frc5572.org',
+  apiBase: window.location.origin,
+  auth0Domain: 'login.frc5572.org',
+  auth0ClientId: '3DIkQirwReuUotmcBcozUMlRHBKd60TX',
+  auth0Audience: 'https://parts.frc5572.org',
 };

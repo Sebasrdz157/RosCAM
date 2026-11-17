@@ -12,7 +12,9 @@ Read this and `CLAUDE.md` first. Keep this file current when things change.
 - **PartsTracker (`Frc5572/PartsTracker`) deploys to production on every push to `main`**
   (Google Cloud Run, someone else's paid account). Only additive changes, on a branch, and
   never put RosCAM data or compute on Google Cloud.
-- RosCAM data lives in the user's own Supabase project; RosCAM runs entirely in the browser.
+- RosCAM is served by PartsTracker at `/cnc/roscam/`; the CAM runs in the browser. Its data (sheets,
+  used areas, tool library) lives in PartsTracker's Firestore in its own `roscam_*` collections,
+  behind `/api/roscam/`, with PartsTracker's Auth0 sign-in (decided 2026-11-17; Supabase retired).
 
 ## The shop (verified from their VCarve output; see `roscam_config.yaml`)
 
@@ -56,28 +58,35 @@ publishes a standalone copy from `main`. Building needs Rust + `rustup target ad
   merge (`config_with_tools`).
 - **Web app** `web/` (static; GitHub Pages via `.github/workflows/pages.yml`):
   `index.html`, `roscam.css`, `app.js` (Make programs), `sheets.js` (Sheets), `tools.js` (Tools),
-  `db.js` (Supabase REST), `worker.js` (Pyodide 0.27.2 runs the Python), `viewer.js` (3D sim,
+  `db.js` (Auth0 + PartsTracker `/api/roscam/`), `worker.js` (Pyodide 0.27.2 runs the Python), `viewer.js` (3D sim,
   from PenguinCAM), `nest/` (nesting engine adapted from SVGnest, MIT). `web/build.py` builds
   `dist/` and stamps `?v=<commit>-<time>` on every file URL (cache busting).
-- **Supabase** (`supabase/schema.sql`, `lock_down.sql`): tables `sheets`, `sheet_regions`,
-  `tools`, `editors`. Editing is currently **open** (no sign-in, `requireSignIn: false` in
-  `web/config.js`). Project URL and publishable key are in `web/config.js` (public by design).
+- **Data and sign-in** (PartsTracker `src/util/roscam.rs` + `src/routes/roscam.rs`): Firestore
+  collections `roscam_sheets`, `roscam_sheet_regions` (outlines stored as lists of `{x, y}` maps:
+  Firestore can't nest arrays), `roscam_tools`. Every call needs Auth0; anyone signed in reads;
+  changes need the PartsTracker **admin or Assignee** role (`can_edit`, also returned by
+  `/api/roscam/me` so the app greys out buttons and shows "View only"). Every row records
+  who created/changed it. Data started fresh in Firestore (nothing imported from Supabase).
+  Sheet IDs are limited to letters, digits, `-`, `_`, `.` (they're Firestore document IDs).
+  The GitHub Pages copy is retired (no login there; it points to the Parts Tracker).
 - **PartsTracker** serves the app at `/cnc/roscam/` (`src/routes/roscam.rs` + generated
   `src/routes/roscam/`). The older `cnc-roscam-tab` branch (an iframe of GitHub Pages) is
   superseded.
 
 ## Branch state (update when it changes)
 
-- `main`: through the tool library and smaller end mills (PR #7, `tools-zoom`).
-- `claude/kind-hamilton-q6h7fb`: the professional UI redesign (below), plus fixed `sheettest.js` /
-  `simtest.js` (they still used the removed Material/Thickness fields) and `tests/browser/make_parts.py`.
-  **User must re-run `supabase/schema.sql`** to create the `tools` table if not done yet.
+- RosCAM `main`: through the logo (PR #11). PR #12 (`.mmg` downloads + export into PartsTracker)
+  plus Auth0/Firestore are on `claude/kind-hamilton-q6h7fb`.
+- PartsTracker `main`: serves RosCAM at `/cnc/roscam/` (PR #4). Its branch `claude` belongs to a
+  teammate, so this project's PartsTracker work goes on other branches (`roscam-in-cnc`, ...).
+  Every PartsTracker merge deploys production; a teammate (wilsonwatson) merges.
 
 ## Testing
 
 - `make test`: all Python tests (~343). Strict G-code hygiene is on in tests.
-- `tests/browser/*.js`: Playwright end-to-end tests against a **stand-in Supabase** (in the
-  script). See `tests/browser/README.md` for setup. The cloud sandbox blocks cdn.jsdelivr.net,
+- `tests/browser/*.js`: Playwright end-to-end tests against a **stand-in Parts Tracker**
+  (`fakeparts.js`: fake Auth0 + an in-memory `/api/roscam/`; `authtest.js` covers sign-in and
+  the view-only role). See `tests/browser/README.md` for setup. The cloud sandbox blocks cdn.jsdelivr.net,
   cdnjs and github.io, so the tests serve a local copy of the Pyodide 0.27.2 release and of
   three.js r128 (paths under the scratch dir passed as argv[2]).
 - `tests/browser/pyodide_repro.js` / `pyodide_stress.js`: run the browser's exact Python
@@ -97,8 +106,6 @@ publishes a standalone copy from `main`. Building needs Rust + `rustup target ad
 - PenguinCAM clears pockets at full depth; small end mills get `_layered_pocket` instead.
 - Browsers cache `worker.js` separately; never ship a new message type without the
   version stamp (`?v=dev` placeholders replaced by `web/build.py`).
-- Supabase row rules make refused UPDATE/DELETE return `[]`, not an error; `db.js` treats an
-  empty result as a failure.
 - Pyodide's pure wheels (typing-extensions, pyparsing, fonttools) must come from
   `loadPackage`, not micropip; `micropip` installs ezdxf from PyPI.
 

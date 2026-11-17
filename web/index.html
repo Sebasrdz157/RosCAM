@@ -28,7 +28,24 @@
       <span class="engine-dot" aria-hidden="true"></span>
       <span id="engine-text">Loading the CAM engine. The first visit takes about 15 seconds.</span>
     </div>
+    <div id="user-box" class="user-box hidden">
+      <span id="user-role" class="role-pill hidden" title="You can look and make programs. Changing sheets, cuts and bits takes the Parts Tracker admin or Assignee role.">View only</span>
+      <img id="user-pic" class="user-pic" alt="" width="26" height="26" referrerpolicy="no-referrer">
+      <span id="user-name" class="user-name"></span>
+      <button id="signout-btn" class="btn small ghost" type="button">Sign out</button>
+    </div>
   </header>
+
+  <div id="signin-gate" class="signin-gate hidden" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+    <div class="gate-card">
+      <img src="logo.png?v=dev" alt="" width="64" height="64" class="gate-logo">
+      <h2 id="gate-title">Sign in to use RosCAM</h2>
+      <p class="hint">Use the same team account as the Parts Tracker board. Sheets, cuts and the tool library
+        are shared by the whole team, so every change records who made it.</p>
+      <button id="signin-btn" class="btn primary block-btn" type="button">Sign in</button>
+      <p id="signin-msg" class="hint gate-msg" aria-live="polite"></p>
+    </div>
+  </div>
 
   <main class="page">
     <div id="view-programs" class="view workspace">
@@ -233,21 +250,6 @@
     </div>
 
     <div id="view-sheets" class="view split-view hidden">
-      <section id="account-card" class="block panel account-card hidden">
-        <div class="account">
-          <form id="signin-form" class="signin">
-            <span class="hint">Anyone can look. Sign in to add or change sheets.</span>
-            <input id="signin-email" type="email" autocomplete="username" placeholder="Email" aria-label="Email" required>
-            <input id="signin-password" type="password" autocomplete="current-password" placeholder="Password"
-                   aria-label="Password" required>
-            <button class="btn primary" type="submit">Sign in</button>
-          </form>
-          <div id="signed-in" class="signed-in hidden">
-            <span>Signed in as <strong id="signed-in-who"></strong></span>
-            <button id="signout" class="btn small" type="button">Sign out</button>
-          </div>
-        </div>
-      </section>
       <p id="sheets-msg" class="sheets-msg" aria-live="polite"></p>
 
       <div class="sheets-layout">
@@ -410,6 +412,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script src="viewer.js?v=dev"></script>
+  <script src="/auth0.js"></script>
   <script src="config.js?v=dev"></script>
   <script src="db.js?v=dev"></script>
   <script src="sheets.js?v=dev"></script>

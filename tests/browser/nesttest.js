@@ -1,8 +1,8 @@
-// Browser test of multi-part nesting on a sheet, with a stand-in for Supabase.
+// Browser test of multi-part nesting on a sheet, with a stand-in for the Parts Tracker API (fakeparts.js).
 const { chromium } = require('playwright');
 const fs = require('fs'), path = require('path');
 const S = process.argv[2];
-const SB = 'https://ugapgbvcnizrirzynhbw.supabase.co';
+const { fakeParts } = require('./fakeparts');
 const startEmpty = process.argv[3] === 'empty';
 
 function serve(route, file, type) {
@@ -18,25 +18,6 @@ const db = {
       polygon: [[0, 0], [24, 0], [24, 6], [0, 6]] },
   ],
 };
-let nextId = 1;
-function json(route, status, body) {
-  route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body), headers: { 'access-control-allow-origin': '*' } });
-}
-async function fakeSupabase(route) {
-  const req = route.request(), url = new URL(req.url()), method = req.method();
-  if (method === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' } });
-  const body = req.postData() ? JSON.parse(req.postData()) : null;
-  const table = url.pathname.replace('/rest/v1/', '');
-  if (method === 'GET' && table === 'sheets') {
-    return json(route, 200, db.sheets.map((s) => ({ ...s, sheet_regions: db.regions.filter((r) => r.sheet_id === s.id) })));
-  }
-  if (table === 'sheet_regions' && method === 'POST') {
-    const row = { id: `r${nextId++}`, created_at: new Date().toISOString(), ...body };
-    db.regions.push(row); return json(route, 201, [row]);
-  }
-  json(route, 400, { message: `unhandled ${method} ${url.pathname}` });
-}
-
 (async () => {
   const browser = await chromium.launch({ proxy: { server: process.env.HTTPS_PROXY, bypass: 'localhost,127.0.0.1' } });
   const context = await browser.newContext({ viewport: { width: 1100, height: 1000 } });
@@ -50,7 +31,7 @@ async function fakeSupabase(route) {
     (r) => serve(r, path.join(S, 'three/package/build/three.min.js'), 'text/javascript'));
   await context.route('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js',
     (r) => serve(r, path.join(S, 'three/package/examples/js/controls/OrbitControls.js'), 'text/javascript'));
-  await context.route(`${SB}/**`, fakeSupabase);
+  await fakeParts(context, { db, tools: [] });
 
   const page = await context.newPage();
   page.on('pageerror', (e) => console.log('pageerror:', e.message));

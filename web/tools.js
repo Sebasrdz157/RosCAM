@@ -1,5 +1,5 @@
 // Tools screen: the bits RosCAM can use. Built-in ones come from roscam_config.yaml; more
-// can be added to the tool library (Supabase "tools" table), e.g. a 1/8" end mill for
+// can be added to the tool library (Firestore, through db.js), e.g. a 1/8" end mill for
 // details the 1/4" end mill can't reach. Exposes window.RosTools.
 'use strict';
 
@@ -246,9 +246,15 @@
         if (ok) setMode('view');
       }
     });
-    RosDB.onAuthChange(() => { if (T.mode === 'view') renderView(); });
+    let loadedFor = RosDB.user() ? RosDB.user().email : null;
+    RosDB.onAuthChange((u) => {
+      if (T.mode === 'view') renderView();
+      const who = u ? u.email : null;
+      if (who && who !== loadedFor) { loadedFor = who; reload(); }
+      if (!who) loadedFor = null;
+    });
     setMode('empty');
-    reload();
+    if (loadedFor) reload();
   }
 
   window.RosTools = {
