@@ -54,10 +54,25 @@ obstacles. `roscam.generate_sheet_job` re-checks every layout (edges, used areas
 before writing programs: each drill program covers every copy, and the end mill cuts every
 copy's holes and pockets before any outline.
 
+## Machines
+
+The machine menu in the top bar picks which CNC the programs are for. Each machine has its
+own settings file, bits and output:
+
+- **Shop: Axiom (Richauto)** (`roscam_config.yaml`): one program per bit, downloaded as `.mmg`
+  (converted in the browser with the PartsTracker converter's code). The operator swaps the bit
+  and re-zeros Z between files.
+- **Home: Avid PRO4848 (Centroid)** (`roscam_config_avid.yaml`): one `.cnc` file with every bit
+  in it, in the format of Vectric's Avid EX post (`roscam_post.py`). The machine stops before each
+  bit (`T# M6`) and its tool setter measures it; its VFD runs the spindle at the programmed speed.
+  Its bits need a tool number (the T number the machine uses).
+
+Sheets, materials, tabs and zeroing are the same on both (sheets come from the shop).
+
 ## Tool library and small details
 
 The **Tools** screen lists the built-in bits (`roscam_config.yaml`) and lets you add more
-(stored in Supabase, table `tools`). Added drills are matched to holes like the built-in
+(stored in the Parts Tracker's Firestore, collection `roscam_tools`). Added drills are matched to holes like the built-in
 ones. Added end mills smaller than the 1/4" profile end mill are used automatically for
 what the 1/4" can't reach: gaps narrower than it on the outside (rack teeth), tight spots
 and narrow slots inside cutouts, and holes too small for it. RosCAM picks the largest end
@@ -69,21 +84,22 @@ library reaches a detail, the page warns that it will be left uncut.
 That geometry uses Clipper (`pyclipper`) because the browser's GEOS build can fail fatally
 when growing and shrinking cutter-shaped outlines.
 
-## Sheet inventory (Supabase)
+## Sheet inventory
 
 The **Sheets** screen keeps track of every sheet of stock by the ID written on it, and the
 areas already used (measured by hand, or recorded automatically with **Mark as cut**). On
 **Make programs**, pick a sheet as the stock and RosCAM places the part clear of the used
-areas (drag it to move it) and zeros the programs on the sheet's lower-left corner.
+areas, nests the parts on it, and zeros the programs on the sheet's lower-left corner.
 
-Data lives in Supabase (`web/config.js` has the project URL and publishable key). Setup:
-Supabase dashboard -> **SQL Editor** -> paste `supabase/schema.sql` -> **Run** (safe to re-run;
-it also creates the `tools` table for the tool library).
+## Sign-in and data
 
-Editing is currently **open**: anyone using RosCAM can add and change sheets, no sign-in.
-To require sign-in later: create editor users under Authentication -> Users (Auto Confirm),
-add their emails to the `editors` table, run `supabase/lock_down.sql`, and set
-`requireSignIn: true` in `web/config.js`.
+RosCAM runs inside the Parts Tracker (parts.frc5572.org/cnc/roscam/) and uses its Auth0
+sign-in: the same team account as the board. Anyone signed in can look and make programs;
+adding or changing sheets, recording cuts and editing bits takes the Parts Tracker **admin**
+or **Assignee** role (set on its Users page). Sheets, used areas and bits live in the Parts
+Tracker's Firestore, in RosCAM's own collections (`roscam_sheets`, `roscam_sheet_regions`,
+`roscam_tools`), behind `/api/roscam/` (PartsTracker `src/routes/roscam.rs`); every change
+records who made it.
 
 Suggested sheet IDs: material, thickness in thousandths, number, e.g. `AL-250-04`,
 `PC-063-01`. Write the ID near the sheet's lower-left corner (where measurements start).

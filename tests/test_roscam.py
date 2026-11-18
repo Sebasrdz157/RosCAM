@@ -131,7 +131,7 @@ class ConfigTests(unittest.TestCase):
 
 
 class ToolLibraryTests(unittest.TestCase):
-    """Bits added on the Tools screen (Supabase rows) on top of roscam_config.yaml."""
+    """Bits added on the Tools screen (tool library rows) on top of roscam_config.yaml."""
 
     def setUp(self):
         self.base = roscam.load_config()

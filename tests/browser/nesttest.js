@@ -1,8 +1,8 @@
-// Browser test of multi-part nesting on a sheet, with a stand-in for Supabase.
+// Browser test of multi-part nesting on a sheet, with a stand-in for the Parts Tracker API (fakeparts.js).
 const { chromium } = require('playwright');
 const fs = require('fs'), path = require('path');
 const S = process.argv[2];
-const SB = 'https://ugapgbvcnizrirzynhbw.supabase.co';
+const { fakeParts } = require('./fakeparts');
 const startEmpty = process.argv[3] === 'empty';
 
 function serve(route, file, type) {
@@ -18,25 +18,6 @@ const db = {
       polygon: [[0, 0], [24, 0], [24, 6], [0, 6]] },
   ],
 };
-let nextId = 1;
-function json(route, status, body) {
-  route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body), headers: { 'access-control-allow-origin': '*' } });
-}
-async function fakeSupabase(route) {
-  const req = route.request(), url = new URL(req.url()), method = req.method();
-  if (method === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' } });
-  const body = req.postData() ? JSON.parse(req.postData()) : null;
-  const table = url.pathname.replace('/rest/v1/', '');
-  if (method === 'GET' && table === 'sheets') {
-    return json(route, 200, db.sheets.map((s) => ({ ...s, sheet_regions: db.regions.filter((r) => r.sheet_id === s.id) })));
-  }
-  if (table === 'sheet_regions' && method === 'POST') {
-    const row = { id: `r${nextId++}`, created_at: new Date().toISOString(), ...body };
-    db.regions.push(row); return json(route, 201, [row]);
-  }
-  json(route, 400, { message: `unhandled ${method} ${url.pathname}` });
-}
-
 (async () => {
   const browser = await chromium.launch({ proxy: { server: process.env.HTTPS_PROXY, bypass: 'localhost,127.0.0.1' } });
   const context = await browser.newContext({ viewport: { width: 1100, height: 1000 } });
@@ -50,13 +31,13 @@ async function fakeSupabase(route) {
     (r) => serve(r, path.join(S, 'three/package/build/three.min.js'), 'text/javascript'));
   await context.route('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js',
     (r) => serve(r, path.join(S, 'three/package/examples/js/controls/OrbitControls.js'), 'text/javascript'));
-  await context.route(`${SB}/**`, fakeSupabase);
+  await fakeParts(context, { db, tools: [] });
 
   const page = await context.newPage();
   page.on('pageerror', (e) => console.log('pageerror:', e.message));
   page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) console.log('console error:', m.text().slice(0, 200)); });
   page.on('dialog', (d) => d.accept());
-  await page.goto('http://localhost:8765/');
+  await page.goto(process.env.ROSCAM_URL || 'http://localhost:8765/');
   await page.waitForSelector('#engine.ready', { timeout: 180000 });
   await page.waitForTimeout(500);
   console.log('material/thickness fields gone:', !(await page.$('#material')) && !(await page.$('#thickness')));
@@ -137,6 +118,28 @@ async function fakeSupabase(route) {
   const [one] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#one-part-zip')]);
   await one.saveAs(`${S}/one_part.zip`);
   console.log('one part:', one.suggestedFilename(), '|', await page.textContent('#one-part-msg'));
+  console.log('one-part zip entries:', require('child_process').execFileSync('python3', ['-c',
+    'import sys,zipfile; print(sorted(zipfile.ZipFile(sys.argv[1]).namelist()))', `${S}/one_part.zip`]).toString().trim());
+
+  // downloads are converted for the router (.mmg) by default, plain .nc when asked
+  await page.waitForFunction(() => /\.mmg$/.test(document.querySelector('#programs .file').textContent));
+  console.log('program files:', await page.$$eval('#programs .file', (l) => l.map((x) => x.textContent)));
+  const [one1] = await Promise.all([page.waitForEvent('download'), page.click('#programs li .btn')]);
+  await one1.saveAs(`${S}/prog1.mmg`);
+  const t1 = fs.readFileSync(`${S}/prog1.mmg`, 'utf8');
+  console.log('download:', one1.suggestedFilename(), '| starts:', JSON.stringify(t1.slice(0, 26)), '| CRLF:', t1.includes('\r\n'));
+  const [all] = await Promise.all([page.waitForEvent('download'), page.click('#zip')]);
+  await all.saveAs(`${S}/all.zip`);
+  console.log('zip check:', require('child_process').execFileSync('python3', ['-c', `
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1]); print(z.testzip() is None, sorted(z.namelist()))
+setup = [n for n in z.namelist() if n.endswith('_SETUP.txt')][0]
+t = z.read(setup).decode(); print('.nc' in t, 'already converted' in t)`, `${S}/all.zip`]).toString().trim());
+  console.log('setup sheet on screen names .mmg:', /\.mmg/.test(await page.textContent('#sheet')));
+  await page.selectOption('#out-format', 'nc');
+  const [nc] = await Promise.all([page.waitForEvent('download'), page.click('#programs li .btn')]);
+  console.log('plain .nc download:', nc.suggestedFilename());
+  await page.selectOption('#out-format', 'mmg');
 
   // mark as cut from the one-part shortcut: only that part is pre-ticked
   console.log('one-part cut button:', await page.textContent('#one-part-cut'));

@@ -1,11 +1,16 @@
-// Tools screen: the bits RosCAM can use. Built-in ones come from roscam_config.yaml; more
-// can be added to the tool library (Supabase "tools" table), e.g. a 1/8" end mill for
-// details the 1/4" end mill can't reach. Exposes window.RosTools.
+// Tools screen: the bits RosCAM can use on the machine picked in the top bar. Built-in ones
+// come from that machine's roscam_config*.yaml; more can be added to the tool library
+// (Firestore, through db.js), e.g. a 1/8" end mill for details the 1/4" end mill can't reach.
+// Every library bit belongs to one machine (rows saved before machines existed: the shop's),
+// so one machine's bits never end up in another's programs. Exposes window.RosTools.
 'use strict';
 
 (function () {
   const $ = (id) => document.getElementById(id);
-  const T = { builtin: [], library: [], selected: null, mode: 'empty', listeners: new Set(), loaded: false };
+  const T = { builtin: [], all: [], library: [], selected: null, mode: 'empty', listeners: new Set(), loaded: false,
+              machine: { id: 'shop', label: '', tool_changes: 'per_file' } };
+  const machineOf = (row) => row.machine || 'shop';
+  function filterLibrary() { T.library = T.all.filter((r) => machineOf(r) === T.machine.id); }
   const el = {};
 
   // ---------------------------------------------------------------- formatting
@@ -52,11 +57,13 @@
   // ---------------------------------------------------------------- data
   async function reload() {
     try {
-      T.library = await RosDB.listTools();
+      T.all = await RosDB.listTools();
+      filterLibrary();
       T.loaded = true;
       if (T.loadError) msg('');
       T.loadError = false;
     } catch (err) {
+      T.all = [];
       T.library = [];
       T.loadError = true;
       msg(`Could not load the tool library: ${err.message}`, 'err');
@@ -120,13 +127,15 @@
   }
 
   const FIELDS = {
-    endmill: [['diameter', 'Diameter', 'in'], ['flute_length', 'Cutting length', 'in'], ['overall_length', 'Overall length', 'in'],
+    endmill: [['tool_number', 'Tool number', ''], ['diameter', 'Diameter', 'in'], ['flute_length', 'Cutting length', 'in'], ['overall_length', 'Overall length', 'in'],
               ['flutes', 'Flutes', ''], ['spindle_speed', 'Spindle', 'RPM'], ['feed_rate', 'Cutting feed', 'in/min'],
               ['plunge_rate', 'Plunge feed', 'in/min'], ['ramp_feed_rate', 'Ramp-in feed', 'in/min'], ['stepdown', 'Depth per pass', 'in']],
-    drill: [['diameter', 'Diameter', 'in'], ['flute_length', 'Cutting length', 'in'], ['overall_length', 'Overall length', 'in'],
+    drill: [['tool_number', 'Tool number', ''], ['diameter', 'Diameter', 'in'], ['flute_length', 'Cutting length', 'in'], ['overall_length', 'Overall length', 'in'],
             ['flutes', 'Flutes', ''], ['spindle_speed', 'Spindle', 'RPM'], ['plunge_rate', 'Feed', 'in/min'],
             ['tip_angle', 'Tip angle', 'deg'], ['peck', 'Peck depth', 'in'], ['peck_retract', 'Lift between pecks', 'in']],
   };
+  // Tool numbers only matter on machines that change bits inside one file (T# M6).
+  const visibleFields = (type) => FIELDS[type].filter(([k]) => k !== 'tool_number' || T.machine.tool_changes === 'in_file');
   const LENGTH_FIELDS = new Set(['diameter', 'flute_length', 'overall_length', 'stepdown', 'peck', 'peck_retract']);
   // Starting values for a new bit; the form says to check them.
   const DEFAULTS = {
@@ -138,10 +147,10 @@
     const t = T.selected;
     if (!t) return setMode('empty');
     el.viewTitle.textContent = t.name;
-    el.viewMeta.textContent = t.builtin
-      ? 'Built into roscam_config.yaml. To change its numbers, copy it to the library: the library copy replaces it.'
-      : (t.overrides ? 'In the tool library, replacing the built-in bit with the same ID.' : 'In the tool library.');
-    el.viewList.replaceChildren(...FIELDS[t.type].map(([k, label, unit]) => {
+    el.viewMeta.textContent = `For ${T.machine.label}. ` + (t.builtin
+      ? "Built into this machine's settings. To change its numbers, copy it to the library: the library copy replaces it."
+      : (t.overrides ? 'In the tool library, replacing the built-in bit with the same ID.' : 'In the tool library.'));
+    el.viewList.replaceChildren(...visibleFields(t.type).map(([k, label, unit]) => {
       const dt = Object.assign(document.createElement('dt'), { textContent: label });
       const v = t[k];
       const dd = Object.assign(document.createElement('dd'), {
@@ -170,7 +179,7 @@
 
   function renderFields(tool) {
     const type = el.fType.value;
-    el.fFields.replaceChildren(...FIELDS[type].map(([k, label, unit]) => {
+    el.fFields.replaceChildren(...visibleFields(type).map(([k, label, unit]) => {
       const wrap = Object.assign(document.createElement('label'), { className: 'field' });
       wrap.append(Object.assign(document.createElement('span'), { textContent: unit ? `${label}, ${unit}` : label }));
       const input = Object.assign(document.createElement('input'), { type: 'text', autocomplete: 'off' });
@@ -180,6 +189,7 @@
       input.value = v === undefined || v === null ? '' : (LENGTH_FIELDS.has(k) ? String(Math.round(v * 1e6) / 1e6) : String(v));
       if (k === 'diameter' || k === 'flute_length') input.required = true;
       if (k === 'diameter') input.placeholder = 'e.g. 1/8';
+      if (k === 'tool_number') { input.required = true; input.inputMode = 'numeric'; input.placeholder = 'T number, e.g. 5'; }
       wrap.append(input);
       return wrap;
     }));
@@ -194,8 +204,12 @@
       if (!raw) { row[k] = null; continue; }
       const v = LENGTH_FIELDS.has(k) ? parseInches(raw) : Number(raw);
       if (!Number.isFinite(v) || v < 0) throw new Error(`Check "${input.previousSibling.textContent}": "${raw}" isn't a number.`);
-      row[k] = k === 'spindle_speed' || k === 'flutes' ? Math.round(v) : v;
+      row[k] = k === 'spindle_speed' || k === 'flutes' || k === 'tool_number' ? Math.round(v) : v;
     }
+    if (T.machine.tool_changes === 'in_file' && !row.tool_number) {
+      throw new Error(`Give the bit its tool number: the T number ${T.machine.label} uses for it.`);
+    }
+    row.machine = T.machine.id;
     const need = type === 'endmill'
       ? ['diameter', 'flute_length', 'spindle_speed', 'plunge_rate', 'feed_rate', 'ramp_feed_rate', 'stepdown']
       : ['diameter', 'flute_length', 'spindle_speed', 'plunge_rate'];
@@ -210,7 +224,21 @@
   }
 
   // ---------------------------------------------------------------- setup
+  // The machine changed (or its options were reloaded): show its bits.
+  function setMachine(options) {
+    const changed = options.machine.id !== T.machine.id;
+    T.machine = options.machine;
+    T.builtin = options.tools.filter((t) => t.builtin);
+    if (el.machineName) el.machineName.textContent = T.machine.label;
+    if (!changed) return;
+    filterLibrary();
+    T.selected = null;
+    if (el.list) { setMode('empty'); render(); }
+    T.listeners.forEach((fn) => fn(T.library));
+  }
+
   function init(options) {
+    T.machine = options.machine;
     T.builtin = options.tools.filter((t) => t.builtin);
     Object.assign(el, {
       msg: $('tools-msg'), list: $('tools-groups'), panel: $('tool-panel'), empty: $('tool-empty'),
@@ -218,7 +246,9 @@
       copy: $('tool-copy'), edit: $('tool-edit'), newTool: $('new-tool'),
       form: $('tool-form'), fTitle: $('tool-form-title'), fType: $('t-type'), fName: $('t-name'), fFields: $('t-fields'),
       fActive: $('t-active'), fNotes: $('t-notes'), fCancel: $('t-cancel'), fDelete: $('t-delete'),
+      machineName: $('tools-machine'),
     });
+    el.machineName.textContent = T.machine.label;
     el.newTool.addEventListener('click', () => fillForm({ type: 'endmill' }, 'add'));
     el.fType.addEventListener('change', () => renderFields({}));
     el.fCancel.addEventListener('click', () => setMode(T.selected ? 'view' : 'empty'));
@@ -227,7 +257,7 @@
     el.fDelete.addEventListener('click', () => {
       const t = T.selected;
       if (!t || !confirm(`Delete ${t.name} from the tool library?${t.overrides ? ' The built-in bit with the same ID comes back.' : ''}`)) return;
-      guarded(() => RosDB.deleteTool(t.id), `Deleted ${t.name}.`).then((ok) => { if (ok) setMode('empty'); });
+      guarded(() => RosDB.deleteTool(t.id, T.machine.id), `Deleted ${t.name}.`).then((ok) => { if (ok) setMode('empty'); });
     });
     el.form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -246,14 +276,21 @@
         if (ok) setMode('view');
       }
     });
-    RosDB.onAuthChange(() => { if (T.mode === 'view') renderView(); });
+    let loadedFor = RosDB.user() ? RosDB.user().email : null;
+    RosDB.onAuthChange((u) => {
+      if (T.mode === 'view') renderView();
+      const who = u ? u.email : null;
+      if (who && who !== loadedFor) { loadedFor = who; reload(); }
+      if (!who) loadedFor = null;
+    });
     setMode('empty');
-    reload();
+    if (loadedFor) reload();
   }
 
   window.RosTools = {
-    init, reload, inches,
-    tools: () => T.library.map((t) => ({ ...t })),
+    init, reload, inches, setMachine,
+    // Every machine's library rows (each says its machine); the engine keeps the chosen one's.
+    tools: () => T.all.map((t) => ({ ...t })),
     onChange(fn) { T.listeners.add(fn); },
   };
 })();

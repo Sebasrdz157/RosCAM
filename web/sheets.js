@@ -1,6 +1,6 @@
 // Sheet inventory screen: list sheets by their sharpie ID, mark used areas by measurement
 // or by dragging, and share sheet data/drawing with the Programs screen.
-// Exposes window.RosSheets. Data lives in Supabase (see db.js / supabase/schema.sql).
+// Exposes window.RosSheets. Data lives in the Parts Tracker's Firestore (see db.js).
 'use strict';
 
 (function () {
@@ -11,8 +11,8 @@
     mode: 'empty',        // right-hand panel: 'empty' | 'add' | 'edit'
     idTouched: false,     // the user typed their own ID, so stop suggesting one
   };
-  const needSignIn = () => !!(window.ROSCAM_CONFIG && window.ROSCAM_CONFIG.requireSignIn);
-  const canEdit = () => !needSignIn() || !!RosDB.user();
+  // Changing sheets takes the Parts Tracker admin or Assignee role (the server enforces it).
+  const canEdit = () => RosDB.canEdit();
   const el = {};
 
   // ---------------------------------------------------------------- helpers
@@ -162,11 +162,6 @@
 
   // ---------------------------------------------------------------- account
   function renderAccount() {
-    const u = RosDB.user();
-    show(el.account, needSignIn());
-    show(el.signinForm, !u);
-    show(el.signedIn, !!u);
-    el.who.textContent = u ? u.email : '';
     document.querySelectorAll('.needs-editor').forEach((n) => { n.disabled = !canEdit(); });
   }
 
@@ -346,9 +341,8 @@
   function init(options) {
     S.options = options;
     Object.assign(el, {
-      msg: $('sheets-msg'), account: $('account-card'), panel: $('sheet-panel'), panelEmpty: $('panel-empty'),
-      newSheet: $('new-sheet'), addCancel: $('add-cancel'), edClose: $('ed-close'), signinForm: $('signin-form'), email: $('signin-email'), password: $('signin-password'),
-      signedIn: $('signed-in'), who: $('signed-in-who'), signout: $('signout'),
+      msg: $('sheets-msg'), panel: $('sheet-panel'), panelEmpty: $('panel-empty'),
+      newSheet: $('new-sheet'), addCancel: $('add-cancel'), edClose: $('ed-close'),
       fMaterial: $('f-material'), fThickness: $('f-thickness'), fUsed: $('f-used'), fCond: $('f-cond'), edCondition: $('ed-condition'),
       list: $('sheet-list'), count: $('sheet-count'), empty: $('sheet-empty'),
       addForm: $('add-sheet'), aId: $('a-id'), aMaterial: $('a-material'), aThickness: $('a-thickness'),
@@ -359,7 +353,6 @@
       rx: $('r-x'), ry: $('r-y'), rw: $('r-w'), rh: $('r-h'), rLabel: $('r-label'),
     });
 
-    el.email.value = window.ROSCAM_CONFIG.teamEmail || '';
     for (const m of options.materials) {
       el.fMaterial.add(new Option(m.name, m.id));
       el.aMaterial.add(new Option(m.name, m.id));
@@ -383,18 +376,14 @@
     el.addCancel.addEventListener('click', () => setMode('empty'));
     el.edClose.addEventListener('click', () => setMode('empty'));
 
-    el.signinForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      try {
-        await RosDB.signIn(el.email.value.trim(), el.password.value);
-        el.password.value = '';
-        msg('Signed in. You can add and change sheets.', 'ok');
-      } catch (err) {
-        msg(err.message, 'err');
-      }
+    // Load once signed in (and again if someone else signs in on this computer).
+    let loadedFor = null;
+    RosDB.onAuthChange((u) => {
+      renderAccount(); renderEditor();
+      const who = u ? u.email : null;
+      if (who && who !== loadedFor) { loadedFor = who; reload(false); }
+      if (!who) loadedFor = null;
     });
-    el.signout.addEventListener('click', () => { RosDB.signOut(); msg('Signed out.', ''); });
-    RosDB.onAuthChange(() => { renderAccount(); renderEditor(); });
 
     el.addForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -441,7 +430,7 @@
     setMode('empty');
     window.addEventListener('resize', () => drawEditor());
     renderAccount();
-    reload(false);
+    if (RosDB.user()) { loadedFor = RosDB.user().email; reload(false); }
   }
 
   window.RosSheets = {

@@ -1,118 +1,107 @@
-// Tiny Supabase client for the sheet inventory: email/password sign-in and the two tables,
-// over Supabase's REST API (no library needed). Exposes window.RosDB.
+// RosCAM's data (sheet inventory, tool library) lives in the Parts Tracker's Firestore, behind
+// its /api/roscam/ endpoints, and every call is signed with the user's Auth0 login: the same
+// login, settings and /auth0.js library as the Parts Tracker board. Exposes window.RosDB.
+//
+// Anyone signed in can read; changing anything takes the Parts Tracker admin or Assignee
+// role (the server checks; canEdit() only greys out buttons).
 'use strict';
 
 (function () {
   const cfg = window.ROSCAM_CONFIG;
-  const SESSION_KEY = 'roscam.session';
-  let session = loadSession();
+  const API = `${cfg.apiBase}/api/roscam`;
   const listeners = new Set();
+  let client = null;
+  let me = null;            // {email, name, picture, can_edit} once signed in
 
-  function loadSession() {
-    try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (_) { return null; }
-  }
-  function saveSession(s) {
-    session = s;
-    try {
-      if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
-      else localStorage.removeItem(SESSION_KEY);
-    } catch (_) { /* storage blocked: stays signed in for this visit only */ }
-    listeners.forEach((fn) => fn(user()));
-  }
-  function user() { return session ? { email: session.email } : null; }
+  function changed() { listeners.forEach((fn) => fn(user())); }
+  function user() { return me ? { email: me.email, name: me.name, picture: me.picture } : null; }
 
-  async function authRequest(path, body) {
-    const res = await fetch(`${cfg.supabaseUrl}/auth/v1/${path}`, {
-      method: 'POST',
-      headers: { apikey: cfg.supabaseKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error_description || data.msg || data.message || `Sign-in failed (${res.status})`);
-    return {
-      access_token: data.access_token, refresh_token: data.refresh_token,
-      expires_at: Date.now() + (data.expires_in || 3600) * 1000,
-      email: (data.user && data.user.email) || body.email || (session && session.email),
-    };
-  }
-
-  async function signIn(email, password) {
-    saveSession(await authRequest('token?grant_type=password', { email, password }));
-    return user();
-  }
-
-  async function signOut() {
-    const s = session;
-    saveSession(null);
-    if (s) {
-      fetch(`${cfg.supabaseUrl}/auth/v1/logout`, {
-        method: 'POST', headers: { apikey: cfg.supabaseKey, Authorization: `Bearer ${s.access_token}` },
-      }).catch(() => {});
+  async function auth0Client() {
+    if (client) return client;
+    if (!window.auth0 || !window.auth0.createAuth0Client) {
+      throw new Error('The sign-in library did not load. Reload the page.');
     }
+    client = await window.auth0.createAuth0Client({
+      domain: cfg.auth0Domain,
+      clientId: cfg.auth0ClientId,
+      authorizationParams: { audience: cfg.auth0Audience, scope: 'openid email profile' },
+      useRefreshTokens: true,
+      cacheLocation: 'localstorage',
+    });
+    return client;
   }
 
   async function token() {
-    if (!session) return null;
-    if (Date.now() > session.expires_at - 60000) {
-      try {
-        saveSession(await authRequest('token?grant_type=refresh_token', { refresh_token: session.refresh_token }));
-      } catch (_) {
-        saveSession(null);
-        return null;
-      }
-    }
-    return session.access_token;
+    const c = await auth0Client();
+    return c.getTokenSilently({ authorizationParams: { audience: cfg.auth0Audience } });
   }
 
-  async function rest(method, path, body) {
-    const headers = { apikey: cfg.supabaseKey, 'Content-Type': 'application/json' };
-    const t = await token();
-    if (t) headers.Authorization = `Bearer ${t}`;
-    if (method !== 'GET') headers.Prefer = 'return=representation';
-    const res = await fetch(`${cfg.supabaseUrl}/rest/v1/${path}`, {
-      method, headers, body: body === undefined ? undefined : JSON.stringify(body),
-    });
+  async function loadMe() {
+    me = await request('GET', '/me');
+    changed();
+    return user();
+  }
+
+  // Restore an existing sign-in without a popup. Resolves to the user, or null if not signed in.
+  async function restore() {
+    try {
+      await token();
+      return await loadMe();
+    } catch (_) {
+      me = null;
+      changed();
+      return null;
+    }
+  }
+
+  async function signIn() {
+    const c = await auth0Client();
+    await c.loginWithPopup();
+    return loadMe();
+  }
+
+  async function signOut() {
+    const c = await auth0Client();
+    me = null;
+    changed();
+    await c.logout({ logoutParams: { returnTo: window.location.href } });
+  }
+
+  async function request(method, path, body) {
+    let t;
+    try {
+      t = await token();
+    } catch (_) {
+      me = null;
+      changed();
+      throw new Error('Sign in with your team account first.');
+    }
+    const headers = { Authorization: `Bearer ${t}` };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const res = await fetch(`${API}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await res.text();
-    const data = text ? JSON.parse(text) : null;
     if (!res.ok) {
-      const msg = (data && (data.message || data.hint)) || `Request failed (${res.status})`;
-      if (res.status === 401 || res.status === 403 || (data && data.code === '42501')) {
-        if (!cfg.requireSignIn && !t) {
-          throw new Error('The database is locked to signed-in editors. Re-run supabase/schema.sql in Supabase to open editing.');
-        }
-        throw new Error(t ? 'This account is not allowed to change sheets. Ask an admin to add it to the editors list.'
-                          : 'Sign in with the team account to change sheets.');
-      }
-      if (res.status === 404 && /sheets|sheet_regions|tools/.test(msg)) {
-        throw new Error(`The ${/tools/.test(msg) ? 'tool library' : 'sheet'} table is missing. Run supabase/schema.sql in the Supabase SQL editor.`);
-      }
-      if (data && data.code === '23505') throw new Error(path.startsWith('tools') ? 'A bit with that ID already exists.' : 'A sheet with that ID already exists.');
-      if (data && data.code === '23514') throw new Error(`The database rejected a value: ${msg}`);
-      throw new Error(msg);
+      if (res.status === 401) throw new Error('Your sign-in expired. Sign in again.');
+      throw new Error(text || `Request failed (${res.status})`);
     }
-    // Row rules hide rows a user may not change, so a refused update/delete "succeeds"
-    // with nothing changed. Treat that as the error it is.
-    if ((method === 'PATCH' || method === 'DELETE') && Array.isArray(data) && data.length === 0) {
-      throw new Error(t || !cfg.requireSignIn
-        ? 'Nothing was changed: the item no longer exists, or the database only lets editors change it.'
-        : 'Sign in with the team account to change sheets.');
-    }
-    return data;
+    return text ? JSON.parse(text) : null;
   }
 
   const enc = encodeURIComponent;
   window.RosDB = {
-    user, signIn, signOut,
+    user, restore, signIn, signOut,
+    canEdit: () => !!(me && me.can_edit),
     onAuthChange(fn) { listeners.add(fn); },
-    listSheets: () => rest('GET', 'sheets?select=*,sheet_regions(*)&order=id.asc'),
-    addSheet: (sheet) => rest('POST', 'sheets', sheet).then((r) => r[0]),
-    updateSheet: (id, patch) => rest('PATCH', `sheets?id=eq.${enc(id)}`, patch).then((r) => r[0]),
-    deleteSheet: (id) => rest('DELETE', `sheets?id=eq.${enc(id)}`),
-    addRegion: (region) => rest('POST', 'sheet_regions', region).then((r) => r[0]),
-    deleteRegion: (id) => rest('DELETE', `sheet_regions?id=eq.${enc(id)}`),
-    listTools: () => rest('GET', 'tools?select=*&order=type.asc,diameter.desc'),
-    addTool: (tool) => rest('POST', 'tools', tool).then((r) => r[0]),
-    updateTool: (id, patch) => rest('PATCH', `tools?id=eq.${enc(id)}`, patch).then((r) => r[0]),
-    deleteTool: (id) => rest('DELETE', `tools?id=eq.${enc(id)}`),
+    listSheets: () => request('GET', '/sheets'),
+    addSheet: (sheet) => request('POST', '/sheets', sheet),
+    updateSheet: (id, patch) => request('PATCH', `/sheets/${enc(id)}`, patch),
+    deleteSheet: (id) => request('DELETE', `/sheets/${enc(id)}`),
+    addRegion: (region) => request('POST', '/regions', region),
+    deleteRegion: (id) => request('DELETE', `/regions/${enc(id)}`),
+    listTools: () => request('GET', '/tools'),
+    addTool: (tool) => request('POST', '/tools', tool),
+    // Bits belong to a machine (the same ID can exist on two machines), so say which one.
+    updateTool: (id, patch) => request('PATCH', `/tools/${enc(id)}?machine=${enc(patch.machine || 'shop')}`, patch),
+    deleteTool: (id, machine) => request('DELETE', `/tools/${enc(id)}?machine=${enc(machine || 'shop')}`),
   };
 })();

@@ -33,6 +33,12 @@ jobs:
           pip install -r requirements.txt
           PENGUINCAM_STRICT_GCODE=1 python -m unittest discover -s tests -t .
 
+      - name: Set up Rust for the G-code converter (compiled to WebAssembly)
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Test the converter
+        run: cargo test --quiet --manifest-path converter/Cargo.toml
+
       - name: Build site
         run: python web/build.py
 

@@ -7,7 +7,7 @@ const EZDXF_VERSION = '1.4.5';
 // Python sources, copied next to this file under py/ by web/build.py.
 const PY_FILES = [
   'roscam.py', 'frc_cam_postprocessor.py', 'team_config.py', 'gcode_hygiene.py',
-  'dxf_geometry.py', 'roscam_config.yaml',
+  'dxf_geometry.py', 'roscam_post.py', 'roscam_config.yaml', 'roscam_config_avid.yaml',
 ];
 
 const PYODIDE_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
@@ -64,10 +64,12 @@ self.onmessage = async (event) => {
       throw err;
     }
     const roscam = pyodide.pyimport('roscam');
+    // Which machine's settings (roscam_config*.yaml) to use; null = the shop's.
+    const machine = (args && args.machine) || null;
     let result;
     if (type === 'options') {
       const tools = pyodide.toPy((args && args.tools) || []);
-      result = toJs(roscam.web_options.callKwargs({ tools }));
+      result = toJs(roscam.web_options.callKwargs({ tools, machine }));
       tools.destroy();
     } else if (type === 'generate') {
       const bytes = pyodide.toPy(new Uint8Array(args.bytes));
@@ -75,18 +77,18 @@ self.onmessage = async (event) => {
       const sheet = args.sheet ? pyodide.toPy(args.sheet) : null;
       const placement = args.placement ? pyodide.toPy(args.placement) : null;
       result = toJs(roscam.web_generate.callKwargs(bytes, args.filename, args.material, args.thickness,
-                                                   overrides, args.rotation, { sheet, placement }));
+                                                   overrides, args.rotation, { sheet, placement, machine }));
       for (const p of [bytes, overrides, sheet, placement]) if (p) p.destroy();
     } else if (type === 'part_info') {
       const bytes = pyodide.toPy(new Uint8Array(args.bytes));
       const tools = pyodide.toPy(args.tools || []);
-      result = toJs(roscam.web_part_info.callKwargs(bytes, args.filename, args.material, args.thickness, { tools }));
+      result = toJs(roscam.web_part_info.callKwargs(bytes, args.filename, args.material, args.thickness, { tools, machine }));
       bytes.destroy();
       tools.destroy();
     } else if (type === 'nest_setup') {
       const sheet = pyodide.toPy(args.sheet);
       const tools = pyodide.toPy(args.tools || []);
-      result = toJs(roscam.web_nest_setup.callKwargs(sheet, { tools }));
+      result = toJs(roscam.web_nest_setup.callKwargs(sheet, { tools, machine }));
       sheet.destroy();
       tools.destroy();
     } else if (type === 'generate_sheet') {
@@ -97,7 +99,7 @@ self.onmessage = async (event) => {
       const unplaced = pyodide.toPy(args.unplaced || []);
       const tools = pyodide.toPy(args.tools || []);
       result = toJs(roscam.web_generate_sheet.callKwargs(files, args.material, args.thickness, sheet, placements,
-                                                         overrides, unplaced, { job_name: args.jobName || null, tools }));
+                                                         overrides, unplaced, { job_name: args.jobName || null, tools, machine }));
       for (const p of [files, sheet, placements, overrides, unplaced, tools]) p.destroy();
     } else {
       throw new Error(`Unknown request ${type}`);

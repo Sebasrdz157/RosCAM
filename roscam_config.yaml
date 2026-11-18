@@ -11,7 +11,14 @@
 # =============================================================================
 
 machine:
+  # Which machine this file is for (see MACHINE_FILES in roscam.py); `label` is what the
+  # machine menu in the web app shows.
+  id: shop
+  label: "Shop: Axiom (Richauto)"
   name: "Axiom CNC router"
+  # richauto: one .nc per bit, converted to .mmg in the browser (converter/).
+  post: richauto
+  tool_changes: per_file
   controller: "Richauto DSP, .mmg via the PartsTracker /cnc converter"
   # Work area. X is the 2' axis, Y is the 4' axis.
   x_max: 24.0

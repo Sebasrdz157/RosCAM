@@ -12,7 +12,9 @@ Read this and `CLAUDE.md` first. Keep this file current when things change.
 - **PartsTracker (`Frc5572/PartsTracker`) deploys to production on every push to `main`**
   (Google Cloud Run, someone else's paid account). Only additive changes, on a branch, and
   never put RosCAM data or compute on Google Cloud.
-- RosCAM data lives in the user's own Supabase project; RosCAM runs entirely in the browser.
+- RosCAM is served by PartsTracker at `/cnc/roscam/`; the CAM runs in the browser. Its data (sheets,
+  used areas, tool library) lives in PartsTracker's Firestore in its own `roscam_*` collections,
+  behind `/api/roscam/`, with PartsTracker's Auth0 sign-in (decided 2026-11-17; Supabase retired).
 
 ## The shop (verified from their VCarve output; see `roscam_config.yaml`)
 
@@ -32,10 +34,63 @@ Open questions for the user: which material each VCarve end mill setting belongs
 (17820 RPM / 144 in/min vs 20978 RPM / 33 in/min seen in `In.mmg`/`out.mmg`); confirm drill
 numbers (an earlier chat had 7200 RPM / 45 in/min).
 
-**Output path:** RosCAM writes plain G0-G3 `.nc` in inches. The team converts each file to
-Richauto `.mmg` with PartsTracker's `/cnc` page (Rust, `src/gcode/`). That converter keeps
-comments up to 60 chars and drops quotes, drops `G4`, and warns on helical arcs (RosCAM
-linearizes them). It reproduces the shop's VCarve files byte-for-byte.
+**Output path:** the CAM engine writes plain G0-G3 `.nc` in inches; the web app then runs
+PartsTracker's converter (Rust `src/gcode/`, copied verbatim into `converter/src/gcode/` and
+compiled to WebAssembly) in the browser, so downloads are router-ready Richauto `.mmg` files
+(a "Files" menu still offers plain `.nc`). Verified byte-for-byte against PartsTracker's live
+`/cnc/convert` (`tests/converter/compare_wasm.js`). That converter keeps comments up to 60
+chars and drops quotes, drops `G4`, and warns on helical arcs (RosCAM linearizes them).
+
+**Where RosCAM is served:** inside PartsTracker at `/cnc/roscam/` (a Converter | RosCAM switch
+on both pages). This repo stays the place RosCAM is developed and tested; to update the team
+site run `uv run python web/build.py --partstracker ../PartsTracker` and open a PartsTracker pull
+request with the regenerated `src/routes/roscam/` (someone else approves PartsTracker merges;
+merging deploys production). The export refuses if `converter/src/gcode` and PartsTracker's
+`src/gcode` differ: run `converter/sync.sh ../PartsTracker` first. GitHub Pages still
+publishes a standalone copy from `main`. Building needs Rust + `rustup target add wasm32-unknown-unknown`.
+
+## Machines (decided 2026-11-18)
+
+RosCAM makes programs for more than one CNC; the top bar's machine menu picks one (remembered
+per browser). Each machine is one settings file in `MACHINE_FILES` (`roscam.py`):
+
+| | Shop: Axiom (Richauto) | Home: Avid PRO4848 (Centroid), a mentor's |
+|---|---|---|
+| File | `roscam_config.yaml` (`id: shop`) | `roscam_config_avid.yaml` (`id: avid`, `extends: roscam_config.yaml`) |
+| Output | one `.nc` per bit, converted to `.mmg` in the browser | one `.cnc` with every bit (`T# M6`), written by `roscam_post.py` |
+| Bit changes | operator swaps the bit, re-zeros Z per file | controller pauses before each bit; tool setter measures it |
+| Spindle | set by hand | VFD takes the `S` word |
+
+- Same zero on both: X0 Y0 lower-left of the stock, Z0 on top. Same materials, tabs, margins
+  (the Avid file inherits them). **Sheets are shared**: the mentor takes shop sheets home, so the
+  Sheets inventory and nesting work the same on both machines.
+- **Bits are per machine.** Built-in bits come from the machine's file; library bits (Firestore
+  `roscam_tools`) carry `machine` (missing = `shop`) and, for the Avid, a required
+  `tool_number`. The server keys non-shop bits as `<machine>__<id>`; PATCH/DELETE take `?machine=`.
+  The engine only ever uses the chosen machine's bits (`config_with_tools` filters rows).
+- **The Avid post** copies the Vectric "Avid EX Controllers, Ver 1.2" post: N numbers in steps
+  of 10, `;` comments, CRLF, inches, `G53 Z0` home moves, `T# M6` + `M3  S####` blocks, only
+  changed axes on G0/G1, X Y I J on arcs, F on the first feed after a rapid and on change.
+  `tests/test_roscam_post.py` replays his real files (`tests/fixtures/avid/`) through it: every
+  move identical except where Vectric repeats an axis that rounds to the same 4-decimal value.
+- His bits and numbers in `roscam_config_avid.yaml` were read from his files (T5 1/4" 3-flute,
+  T2 1/8"); he should check them. More machines: add a file to `MACHINE_FILES` (and to
+  `PY_FILES` in `web/build.py` and `web/worker.js`).
+
+## Next task: vise / tube work on the Avid (planned, not started)
+
+The mentor holds stock in a vise, mainly 2x1 aluminum tube for custom cutouts (not limited to
+that), and wants a Fusion-like check that the toolpath won't hit the vise. Plan:
+1. Setup type "Vise" (Avid only at first) next to "Sheet": a vise library (jaw width/height,
+   fixed jaw position, body box, parallels height; later an STL from Onshape) and stock
+   (tube: outside size, wall, length; or bar/block). Zero at the fixed-jaw corner, Z0 on top.
+2. One DXF per face (sketch on the tube face in Onshape) = one setup; through-cuts go through
+   the top wall only (wall + small overcut), never into the far wall or the vise.
+3. Collision check of every move (rapids included) for the cutter and the holder/collet against
+   jaws, body and parallels; downloads blocked with the place named ("hits the fixed jaw at
+   X.. Y.."); vise and tube drawn in the 3D simulation with the collision point in red.
+4. Later: STL vises, several faces of one tube in one session.
+Needs from him: vise model or jaw width/height/body size, parallels, how he zeros on the vise.
 
 ## What exists
 
@@ -46,28 +101,35 @@ linearizes them). It reproduces the shop's VCarve files byte-for-byte.
   merge (`config_with_tools`).
 - **Web app** `web/` (static; GitHub Pages via `.github/workflows/pages.yml`):
   `index.html`, `roscam.css`, `app.js` (Make programs), `sheets.js` (Sheets), `tools.js` (Tools),
-  `db.js` (Supabase REST), `worker.js` (Pyodide 0.27.2 runs the Python), `viewer.js` (3D sim,
+  `db.js` (Auth0 + PartsTracker `/api/roscam/`), `worker.js` (Pyodide 0.27.2 runs the Python), `viewer.js` (3D sim,
   from PenguinCAM), `nest/` (nesting engine adapted from SVGnest, MIT). `web/build.py` builds
   `dist/` and stamps `?v=<commit>-<time>` on every file URL (cache busting).
-- **Supabase** (`supabase/schema.sql`, `lock_down.sql`): tables `sheets`, `sheet_regions`,
-  `tools`, `editors`. Editing is currently **open** (no sign-in, `requireSignIn: false` in
-  `web/config.js`). Project URL and publishable key are in `web/config.js` (public by design).
-- **PartsTracker** branch `cnc-roscam-tab`: adds Converter | RosCAM tabs to `/cnc` and a
-  `/cnc/roscam` page that frames `https://sebasrdz157.github.io/RosCAM/`. Additive only.
-  Not merged (user decides; merging deploys production).
+- **Data and sign-in** (PartsTracker `src/util/roscam.rs` + `src/routes/roscam.rs`): Firestore
+  collections `roscam_sheets`, `roscam_sheet_regions` (outlines stored as lists of `{x, y}` maps:
+  Firestore can't nest arrays), `roscam_tools`. Every call needs Auth0; anyone signed in reads;
+  changes need the PartsTracker **admin or Assignee** role (`can_edit`, also returned by
+  `/api/roscam/me` so the app greys out buttons and shows "View only"). Every row records
+  who created/changed it. Data started fresh in Firestore (nothing imported from Supabase).
+  Sheet IDs are limited to letters, digits, `-`, `_`, `.` (they're Firestore document IDs).
+  The GitHub Pages copy is retired (no login there; it points to the Parts Tracker).
+- **PartsTracker** serves the app at `/cnc/roscam/` (`src/routes/roscam.rs` + generated
+  `src/routes/roscam/`). The older `cnc-roscam-tab` branch (an iframe of GitHub Pages) is
+  superseded.
 
 ## Branch state (update when it changes)
 
-- `main`: through the tool library and smaller end mills (PR #7, `tools-zoom`).
-- `claude/kind-hamilton-q6h7fb`: the professional UI redesign (below), plus fixed `sheettest.js` /
-  `simtest.js` (they still used the removed Material/Thickness fields) and `tests/browser/make_parts.py`.
-  **User must re-run `supabase/schema.sql`** to create the `tools` table if not done yet.
+- RosCAM `main`: through the logo (PR #11). PR #12 (`.mmg` downloads + export into PartsTracker)
+  plus Auth0/Firestore are on `claude/kind-hamilton-q6h7fb`.
+- PartsTracker `main`: serves RosCAM at `/cnc/roscam/` (PR #4). Its branch `claude` belongs to a
+  teammate, so this project's PartsTracker work goes on other branches (`roscam-in-cnc`, ...).
+  Every PartsTracker merge deploys production; a teammate (wilsonwatson) merges.
 
 ## Testing
 
 - `make test`: all Python tests (~343). Strict G-code hygiene is on in tests.
-- `tests/browser/*.js`: Playwright end-to-end tests against a **stand-in Supabase** (in the
-  script). See `tests/browser/README.md` for setup. The cloud sandbox blocks cdn.jsdelivr.net,
+- `tests/browser/*.js`: Playwright end-to-end tests against a **stand-in Parts Tracker**
+  (`fakeparts.js`: fake Auth0 + an in-memory `/api/roscam/`; `authtest.js` covers sign-in and
+  the view-only role). See `tests/browser/README.md` for setup. The cloud sandbox blocks cdn.jsdelivr.net,
   cdnjs and github.io, so the tests serve a local copy of the Pyodide 0.27.2 release and of
   three.js r128 (paths under the scratch dir passed as argv[2]).
 - `tests/browser/pyodide_repro.js` / `pyodide_stress.js`: run the browser's exact Python
@@ -87,8 +149,6 @@ linearizes them). It reproduces the shop's VCarve files byte-for-byte.
 - PenguinCAM clears pockets at full depth; small end mills get `_layered_pocket` instead.
 - Browsers cache `worker.js` separately; never ship a new message type without the
   version stamp (`?v=dev` placeholders replaced by `web/build.py`).
-- Supabase row rules make refused UPDATE/DELETE return `[]`, not an error; `db.js` treats an
-  empty result as a failure.
 - Pyodide's pure wheels (typing-extensions, pyparsing, fonttools) must come from
   `loadPackage`, not micropip; `micropip` installs ezdxf from PyPI.
 

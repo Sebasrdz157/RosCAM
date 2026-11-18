@@ -14,18 +14,23 @@ for milled holes, pockets and the outline with tabs) plus a setup sheet.
 - `roscam.py` - the RosCAM job builder and CLI. Uses `FRCPostProcessor` for geometry,
   pocketing and tabs; adds the tool library, hole-to-drill matching, per-tool programs,
   stock-top Z zero, G83 expansion, and preflight checks.
-- `roscam_config.yaml` - machine, tool library, materials/thicknesses and tab sizes.
+- `roscam_config.yaml` - the shop machine, tool library, materials/thicknesses and tab sizes;
+  `roscam_config_avid.yaml` - a mentor's Avid PRO4848 (`extends:` the shop file; its own bits).
+  `MACHINE_FILES` in `roscam.py` lists the machines; every web call names one.
+- `roscam_post.py` - the Avid EX (Centroid) post: every bit in one `.cnc` with `T# M6` changes.
+  It emits G-code, so it goes through `finalize_gcode()` and is in `GCODE_SOURCES`.
 - `tests/test_roscam.py` - RosCAM tests; `tests/fixtures/make_roscam_plate.py` builds the test plate.
 - `web/` - the static web app (runs roscam.py in the browser via Pyodide); `web/nest/` - nesting
-  engine adapted from SVGnest (MIT; keep its license file and headers); `supabase/` - sheet
-  inventory schema. `uv run python web/build.py` assembles `dist/`.
+  engine adapted from SVGnest (MIT; keep its license file and headers); `web/db.js` - sheet
+  inventory and tool library through the Parts Tracker's `/api/roscam/` (Auth0 sign-in, Firestore). `uv run python web/build.py` assembles `dist/`.
 
 RosCAM conventions (differ from upstream PenguinCAM):
 - **Z0 is the TOP of the stock** (PenguinCAM's internal frame is Z0 at the spoilboard;
   `roscam.shift_z` converts the end mill body). X0 Y0 is the lower-left corner of the stock,
   with the part placed `setup.stock_margin` in from it.
-- Output is plain G0/G1/G2/G3 in inches: no canned cycles (G83 is expanded), no G53.
-  The team converts each `.nc` to `.mmg` with the PartsTracker `/cnc` page.
+- The engine writes plain G0/G1/G2/G3 in inches: no canned cycles (G83 is expanded), no G53.
+  The web app converts each program to Richauto `.mmg` in the browser (`converter/`, the same
+  code as the PartsTracker `/cnc` page) before download.
 
 ```bash
 uv run python roscam.py part.dxf -m aluminum -t 1/4 -o out/

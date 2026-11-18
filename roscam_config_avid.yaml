@@ -1,0 +1,64 @@
+# =============================================================================
+# RosCAM settings for the Avid PRO4848 (a mentor's machine, Centroid / Avid EX controller)
+# =============================================================================
+# Starts from roscam_config.yaml (same materials, tabs, margins, zeroing: the sheets come
+# from the shop) and changes only what's different about this machine. `tools` here
+# replaces the shop's list whole: shop bits are never used on this machine.
+#
+# Output: one .cnc file per job with every bit in it. The controller pauses before each
+# bit change (T# M6) and its tool setter measures the new bit; the VFD runs the spindle at
+# the S speed. Format matches the Vectric "Avid EX Controllers" post (roscam_post.py).
+# =============================================================================
+extends: roscam_config.yaml
+
+machine:
+  id: avid
+  label: "Home: Avid PRO4848 (Centroid)"
+  name: "Avid PRO4848"
+  controller: "Avid EX (Centroid CNC12), .cnc with tool changes"
+  post: avid_ex
+  tool_changes: in_file
+  file_extension: cnc
+  # Cutting area of a PRO4848 (48" x 48"), enough for the shop's 24" x 48" sheets.
+  x_max: 48.0
+  y_max: 48.0
+  z_max: 6.0
+  tool_changer: false   # manual changes, but in one file: see tool_changes
+
+# Bits and numbers from his own Vectric files (CUT1.2, Profile 2, bore, 71Bar Side 3):
+# check them and correct or add bits on the Tools screen (choose this machine first).
+# tool_number is the T number his controller expects for that bit.
+tools:
+  endmill_1_4_3f:
+    name: '1/4" 3-flute end mill'
+    type: endmill
+    tool_number: 5
+    diameter: 0.25
+    flute_length: 0.75
+    flutes: 3
+    spindle_speed: 16782      # CUT1.2: 1/4" aluminum sheet
+    feed_rate: 72.0
+    plunge_rate: 5.0
+    ramp_feed_rate: 5.0       # his files ramp in at the plunge feed
+    stepdown: 0.085           # three passes through 1/4" plate
+
+  endmill_1_8:
+    name: '1/8" end mill'
+    type: endmill
+    tool_number: 2
+    diameter: 0.125
+    flute_length: 0.5
+    flutes: 2
+    spindle_speed: 30000      # CUT1.2: aluminum
+    feed_rate: 15.0
+    plunge_rate: 5.0
+    ramp_feed_rate: 5.0
+    stepdown: 0.05            # Profile 2: 0.05" passes
+
+profile_tool: endmill_1_4_3f
+
+materials:
+  polycarbonate:
+    # Profile 2 / 71Bar Side 3 ran the 1/8" end mill at 33 in/min with 15 in/min plunges.
+    tool_overrides:
+      endmill_1_8: {feed_rate: 33, plunge_rate: 15, ramp_feed_rate: 15}
