@@ -14,6 +14,10 @@
       <img class="brand-logo" src="logo.png?v=dev" alt="Team 5572 logo" width="32" height="32">
       <h1>RosCAM</h1>
     </div>
+    <label class="machine-pick" title="Which CNC machine the programs, bits and settings are for">
+      <span class="sr-only">Machine</span>
+      <select id="machine" aria-label="Machine" disabled><option>Loading machines...</option></select>
+    </label>
     <nav id="host-tabs" class="host-tabs hidden" aria-label="CNC tools">
       <a href="/cnc">Converter</a>
       <a href="/cnc/roscam/" aria-current="page">RosCAM</a>
@@ -198,7 +202,7 @@
 
           <div id="programs-wrap" class="panel-section block hidden">
             <h2 class="section-title">Programs</h2>
-            <p class="hint">Run them in this order, swapping the bit and re-zeroing Z between programs.</p>
+            <p class="hint" id="programs-note">Run them in this order, swapping the bit and re-zeroing Z between programs.</p>
             <ol id="programs" class="programs"></ol>
             <div class="out-format">
               <label class="field"><span>Files</span>
@@ -208,6 +212,7 @@
                 </select></label>
               <label class="check" id="strip-wrap"><input id="out-strip" type="checkbox"> Strip unnecessary comments, like VCarve</label>
             </div>
+            <button id="combined-dl" class="btn primary block-btn hidden" type="button">Download</button>
             <button id="zip" class="btn primary block-btn" type="button">Download all (.zip)</button>
             <div class="one-part">
               <label class="field"><span>Or just one part</span><select id="one-part"></select></label>
@@ -360,7 +365,7 @@
         <section class="block panel list-panel">
           <div class="sheets-head">
             <div>
-              <h2>Your bits</h2>
+              <h2>Bits for <span id="tools-machine"></span></h2>
               <p class="hint">The drills and end mills RosCAM can use. Holes that match a drill are drilled; areas the
                 1/4" end mill can't reach (like rack teeth) are cut with the largest smaller end mill listed here.</p>
             </div>

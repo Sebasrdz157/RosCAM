@@ -30,7 +30,10 @@ async function fakeParts(context, { db = { sheets: [], regions: [] }, tools = []
 
   await context.route('**/api/roscam/**', (route) => {
     const req = route.request(), method = req.method();
-    const path = new URL(req.url()).pathname.replace(/^.*\/api\/roscam/, '');
+    const url = new URL(req.url());
+    const path = url.pathname.replace(/^.*\/api\/roscam/, '');
+    const machine = url.searchParams.get('machine') || 'shop';
+    const sameBit = (t, id, m) => t.id === id && (t.machine || 'shop') === m;
     const body = req.postData() ? JSON.parse(req.postData()) : null;
     const reply = (status, data) => route.fulfill({
       status, contentType: typeof data === 'string' ? 'text/plain' : 'application/json',
@@ -80,15 +83,20 @@ async function fakeParts(context, { db = { sheets: [], regions: [] }, tools = []
       return reply(204);
     }
     if (method === 'POST' && path === '/tools') {
-      if (tools.some((t) => t.id === body.id)) return reply(409, 'A bit with that ID already exists.');
-      const row = { ...body, created_at: now(), created_by: email };
+      const m = body.machine || 'shop';
+      if (tools.some((t) => sameBit(t, body.id, m))) return reply(409, 'This machine already has a bit with that ID.');
+      const row = { ...body, machine: m, created_at: now(), created_by: email };
       tools.push(row);
       return reply(201, row);
     }
     if ((m = path.match(/^\/tools\/(.+)$/))) {
-      const i = tools.findIndex((t) => t.id === decodeURIComponent(m[1]));
+      const i = tools.findIndex((t) => sameBit(t, decodeURIComponent(m[1]), machine));
       if (i < 0) return reply(404, 'That bit no longer exists.');
-      if (method === 'PATCH') { Object.assign(tools[i], body); return reply(200, tools[i]); }
+      if (method === 'PATCH') {
+        const { id: _id, machine: _m, ...changes } = body;          // a bit can't change machines
+        Object.assign(tools[i], changes);
+        return reply(200, tools[i]);
+      }
       if (method === 'DELETE') { tools.splice(i, 1); return reply(204); }
     }
     return reply(400, `unhandled ${method} ${path}`);

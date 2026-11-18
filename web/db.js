@@ -100,7 +100,8 @@
     deleteRegion: (id) => request('DELETE', `/regions/${enc(id)}`),
     listTools: () => request('GET', '/tools'),
     addTool: (tool) => request('POST', '/tools', tool),
-    updateTool: (id, patch) => request('PATCH', `/tools/${enc(id)}`, patch),
-    deleteTool: (id) => request('DELETE', `/tools/${enc(id)}`),
+    // Bits belong to a machine (the same ID can exist on two machines), so say which one.
+    updateTool: (id, patch) => request('PATCH', `/tools/${enc(id)}?machine=${enc(patch.machine || 'shop')}`, patch),
+    deleteTool: (id, machine) => request('DELETE', `/tools/${enc(id)}?machine=${enc(machine || 'shop')}`),
   };
 })();

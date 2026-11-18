@@ -65,6 +65,9 @@ code { font-family: var(--mono); font-size: .95em; color: var(--text); }
 }
 .views { display: flex; gap: var(--s1); }
 /* Inside PartsTracker: switch between its Converter and RosCAM */
+.machine-pick { align-self: center; flex: none; }
+.machine-pick select { min-height: 30px; padding: 3px 28px 3px 10px; font-size: 12px; font-weight: 600; max-width: 260px;
+                       background-color: var(--surface-2); border-color: var(--border-strong); }
 .host-tabs { display: flex; align-self: center; padding: 3px; gap: 2px; background: var(--bg);
              border: 1px solid var(--border); border-radius: var(--radius); flex: none; }
 .host-tabs a { padding: 4px 10px; border-radius: var(--radius-sm); color: var(--text-2); text-decoration: none;
@@ -365,6 +368,7 @@ input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent);
 }
 .programs .file { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 .programs .meta { grid-column: 2; color: var(--text-2); font-size: 12px; }
+.programs li.no-dl { grid-template-columns: 24px minmax(0, 1fr); }
 .programs .btn { grid-row: 1 / span 2; grid-column: 3; min-height: 28px; padding: 3px 10px; font-size: 12px; }
 .out-format { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s2) 0 var(--s1); }
 .one-part { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s2); padding-top: var(--s3); border-top: 1px dashed var(--border); }

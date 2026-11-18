@@ -30,6 +30,7 @@ const els = {
   zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), zoomFit: $('zoom-fit'),
   onePart: $('one-part'), onePartZip: $('one-part-zip'), onePartMsg: $('one-part-msg'), onePartCut: $('one-part-cut'),
   outFormat: $('out-format'), outStrip: $('out-strip'), stripWrap: $('strip-wrap'), formatNote: $('format-note'),
+  machine: $('machine'), combinedDl: $('combined-dl'), programsNote: $('programs-note'),
 };
 
 const state = {
@@ -48,9 +49,17 @@ const state = {
 };
 
 // Extra bits from the Tools screen (tool library), passed to the CAM engine with each job.
+// Every machine's rows go along; the engine keeps only the chosen machine's.
 function libraryTools() {
   return window.RosTools ? RosTools.tools() : [];
 }
+
+// Which machine the programs are for (an id from the engine's MACHINE_FILES; null = the shop's).
+function savedMachine() {
+  try { return localStorage.getItem('roscam.machine') || null; } catch (_) { return null; }
+}
+state.machine = savedMachine();
+const machineInfo = () => (state.options && state.options.machine) || { id: 'shop', tool_changes: 'per_file' };
 
 // ---- CAM worker (Python) ---------------------------------------------------------
 let worker = null;
@@ -98,7 +107,7 @@ function call(type, args) {
   const id = nextId++;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    worker.postMessage({ id, type, args });
+    worker.postMessage({ id, type, args: { ...(args || {}), machine: state.machine } });
   });
 }
 
@@ -175,8 +184,15 @@ nestWorker.onerror = (e) => {
 })();
 
 // ---- startup --------------------------------------------------------------------
-call('options').then((opts) => {
+// A machine remembered from an older version may be gone: fall back to the default one.
+call('options').catch((err) => {
+  if (!state.machine || !/Unknown machine/.test(err.message)) throw err;
+  state.machine = null;
+  return call('options');
+}).then((opts) => {
   state.options = opts;
+  state.machine = opts.machine.id;
+  fillMachines(opts);
   RosSheets.init(opts);
   RosSheets.onChange(() => { fillStock(); refreshCutButton(); });
   RosTools.init(opts);
@@ -208,6 +224,40 @@ els.stock.addEventListener('change', () => { saveChoices(); state.marked = new S
 els.rotation.addEventListener('change', () => { saveChoices(); refresh(); });
 els.goSheets.addEventListener('click', () => document.querySelector('.view-tab[data-view="sheets"]').click());
 
+// ---- machine picker --------------------------------------------------------------
+function fillMachines(opts) {
+  els.machine.replaceChildren(...opts.machines.map((m) => new Option(m.label, m.id)));
+  els.machine.value = opts.machine.id;
+  els.machine.disabled = false;
+  els.machine.title = `${opts.machine.name}: ${opts.machine.controller}`;
+  updateFormatLabels();
+}
+
+els.machine.addEventListener('change', async () => {
+  const id = els.machine.value;
+  els.machine.disabled = true;
+  try {
+    state.machine = id;
+    const opts = await call('options', { tools: libraryTools() });
+    state.options = { ...state.options, ...opts };
+    try { localStorage.setItem('roscam.machine', id); } catch (_) { /* ignore */ }
+    toolsKey = JSON.stringify(libraryTools());
+    RosTools.setMachine(opts);
+    fillMachines(opts);
+    // Hole choices name the old machine's bits; the layout and programs are for the old one.
+    state.overrides = {};
+    state.marked = new Set();
+    state.lastOnePart = null;
+    for (const p of state.parts) p.infoKey = '';
+    refresh();
+  } catch (err) {
+    els.machine.value = machineInfo().id;
+    state.machine = machineInfo().id;
+    els.machine.disabled = false;
+    fillList(els.errors, [`Could not switch machines: ${err.message}`]);
+  }
+});
+
 // The tool library changed: refresh the menus that list bits, and re-plan the parts
 // (a new drill or end mill can change how holes and details are made).
 let toolsKey = '[]';
@@ -218,6 +268,7 @@ async function onToolsChanged() {
   try {
     const opts = await call('options', { tools: libraryTools() });
     state.options = { ...state.options, ...opts };
+    RosTools.setMachine(opts);
   } catch (err) {
     console.warn('Could not refresh the tool list', err);
   }
@@ -363,7 +414,7 @@ async function doRefresh() {
   els.result.classList.remove('hidden');
   setStatus('busy', 'Reading parts...');
   hideOutputs();
-  const key = `${material}|${thickness}`;
+  const key = `${state.machine}|${material}|${thickness}`;
   try {
     for (const p of state.parts) {
       if (p.infoKey !== key) {
@@ -698,6 +749,7 @@ function renderPrograms(programs) {
       className: 'meta', textContent: `${p.tool_name}, ${p.spindle_speed} RPM: ${p.features}`,
     });
     const btn = Object.assign(document.createElement('button'), { className: 'btn', type: 'button', textContent: 'Download' });
+    if (inOneFile(state.result)) { li.append(num, file, meta); li.classList.add('no-dl'); return li; }
     btn.addEventListener('click', async () => {
       try {
         const f = await outputFile(p);
@@ -782,7 +834,13 @@ function convertProgram(p) {
   return byStrip[k];
 }
 const mmgName = (p) => p.filename.replace(/\.nc$/i, '.mmg');
-function outputName(p) { return outputPrefs.format === 'nc' ? p.filename : (p.mmgName || mmgName(p)); }
+// Machines that take every bit in one file (the Avid): the engine already wrote that file.
+const inOneFile = (res) => !!(res && res.combined) && outputPrefs.format !== 'nc';
+function outputName(p) {
+  if (outputPrefs.format === 'nc') return p.filename;
+  if (inOneFile(state.result)) return `T${p.tool_number}, in ${state.result.combined.name}`;
+  return p.mmgName || mmgName(p);
+}
 async function outputFile(p) {
   if (outputPrefs.format === 'nc') return { name: p.filename, text: p.gcode };
   const c = await convertProgram(p);
@@ -790,13 +848,19 @@ async function outputFile(p) {
   return { name: c.name, text: c.text };
 }
 function outputSetupSheet(res, files) {
-  if (outputPrefs.format === 'nc') return res.setup_sheet;
+  if (outputPrefs.format === 'nc' || res.combined) return res.setup_sheet;
   let text = res.setup_sheet;
   res.programs.forEach((p, i) => { text = text.split(p.filename).join(files[i].name); });
   return text.replace('Convert each .nc file with the PartsTracker /cnc page before running it.',
     'These .mmg files are already converted for the Richauto controller.');
 }
 async function zipFor(res) {
+  if (inOneFile(res)) return zipBlob(res.zip_base64);        // the .cnc + setup sheet
+  if (outputPrefs.format === 'nc' && res.combined) {          // one plain .nc per bit instead
+    const part = res.zip_name.replace(/_roscam\.zip$/, '');
+    return makeZip([...res.programs.map((p) => ({ name: p.filename, text: p.gcode })),
+                    { name: `00_${part}_SETUP.txt`, text: res.setup_sheet }]);
+  }
   if (outputPrefs.format === 'nc') return zipBlob(res.zip_base64);
   const files = [];
   for (const p of res.programs) files.push(await outputFile(p));
@@ -808,7 +872,8 @@ async function zipFor(res) {
 // those names, and any converter warnings or errors before anyone downloads.
 async function checkConversion(res) {
   renderFormatNote();
-  if (outputPrefs.format === 'nc') {
+  if (outputPrefs.format === 'nc' || res.combined) {
+    renderPrograms(res.programs);
     els.sheet.textContent = res.setup_sheet;
     fillList(els.warnings, state.baseWarnings || []);
     return;
@@ -834,11 +899,39 @@ async function checkConversion(res) {
 
 function renderFormatNote() {
   const mmg = outputPrefs.format === 'mmg';
-  els.stripWrap.classList.toggle('hidden', !mmg);
-  els.formatNote.textContent = mmg
-    ? 'These are converted for the Richauto controller with the same converter as the Converter page, ready to run. Dry-run above the stock if anything looks unfamiliar.'
-    : 'Convert each .nc file with the Converter before running it, and dry-run above the stock if anything looks unfamiliar.';
+  const m = machineInfo();
+  const oneFile = m.tool_changes === 'in_file';
+  els.stripWrap.classList.toggle('hidden', !mmg || oneFile);
+  const res = state.result;
+  els.combinedDl.classList.toggle('hidden', !(mmg && res && res.success && res.combined));
+  if (mmg && res && res.combined) els.combinedDl.textContent = `Download ${res.combined.name}`;
+  els.zip.textContent = mmg && oneFile ? 'Download with the setup sheet (.zip)' : 'Download all (.zip)';
+  els.zip.classList.toggle('primary', !(mmg && oneFile));
+  els.programsNote.textContent = oneFile
+    ? 'In this order, all in one file: the machine stops before each bit (its T number below) and the tool setter measures it.'
+    : 'Run them in this order, swapping the bit and re-zeroing Z between programs.';
+  els.formatNote.textContent = mmg && oneFile
+    ? `One file for every bit, ready for the ${m.name}: it stops before each bit and the tool setter measures it. Dry-run above the stock if anything looks unfamiliar.`
+    : mmg
+      ? 'These are converted for the Richauto controller with the same converter as the Converter page, ready to run. Dry-run above the stock if anything looks unfamiliar.'
+      : 'Plain G-code, one file per bit: convert each one for its machine before running it, and dry-run above the stock if anything looks unfamiliar.';
 }
+
+// The "Files" menu says what the chosen machine gets.
+function updateFormatLabels() {
+  const m = machineInfo();
+  const [ready, plain] = els.outFormat.options;
+  ready.textContent = m.post === 'avid_ex' ? `Ready for the ${m.name} (.${m.file_extension}, every bit in one file)`
+    : 'Ready for the router (.mmg)';
+  plain.textContent = 'Plain G-code (.nc, one per bit), to convert later';
+  renderFormatNote();
+}
+
+els.combinedDl.addEventListener('click', () => {
+  const res = state.result;
+  if (!res || !res.combined) return;
+  download(new Blob([res.combined.text], { type: 'application/octet-stream' }), res.combined.name);
+});
 renderFormatNote();
 
 function saveOutputPrefs() {

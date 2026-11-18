@@ -54,6 +54,21 @@ obstacles. `roscam.generate_sheet_job` re-checks every layout (edges, used areas
 before writing programs: each drill program covers every copy, and the end mill cuts every
 copy's holes and pockets before any outline.
 
+## Machines
+
+The machine menu in the top bar picks which CNC the programs are for. Each machine has its
+own settings file, bits and output:
+
+- **Shop: Axiom (Richauto)** (`roscam_config.yaml`): one program per bit, downloaded as `.mmg`
+  (converted in the browser with the PartsTracker converter's code). The operator swaps the bit
+  and re-zeros Z between files.
+- **Home: Avid PRO4848 (Centroid)** (`roscam_config_avid.yaml`): one `.cnc` file with every bit
+  in it, in the format of Vectric's Avid EX post (`roscam_post.py`). The machine stops before each
+  bit (`T# M6`) and its tool setter measures it; its VFD runs the spindle at the programmed speed.
+  Its bits need a tool number (the T number the machine uses).
+
+Sheets, materials, tabs and zeroing are the same on both (sheets come from the shop).
+
 ## Tool library and small details
 
 The **Tools** screen lists the built-in bits (`roscam_config.yaml`) and lets you add more

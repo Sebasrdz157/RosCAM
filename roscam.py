@@ -45,6 +45,9 @@ from gcode_hygiene import finalize_gcode
 from team_config import TeamConfig, parse_length
 
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'roscam_config.yaml')
+# Every machine RosCAM makes programs for, one settings file each; the first is the default.
+# A file may start from another with `extends:` (see roscam_config_avid.yaml).
+MACHINE_FILES = ['roscam_config.yaml', 'roscam_config_avid.yaml']
 
 MILL = 'mill'  # hole assignment: cut with the profile end mill instead of a drill
 
@@ -83,6 +86,7 @@ class Tool:
     tip_angle: Optional[float] = None       # drills
     peck: float = 0.0                       # drills: 0 = single plunge
     peck_retract: float = 0.0               # drills: lift between pecks; 0 = all the way out
+    tool_number: Optional[int] = None       # the T number on machines that change tools in a file
 
     @property
     def is_drill(self) -> bool:
@@ -157,6 +161,11 @@ class ShopConfig:
     tabs_enabled: bool = True
     remove_tabs: bool = False
     cut_gap: float = 0.25        # solid material left between any two cuts (see setup.cut_gap)
+    machine_id: str = 'shop'
+    machine_label: str = ''
+    post: str = 'richauto'       # richauto: per-tool .nc, converted to .mmg in the browser; avid_ex: one .cnc
+    tool_changes: str = 'per_file'   # per_file: one program per bit; in_file: one file, T# M6 between bits
+    file_extension: str = 'nc'
 
     @property
     def profile_tool(self) -> Tool:
@@ -215,7 +224,10 @@ def tool_from_dict(tool_id: str, t: dict) -> Tool:
         tip_angle=num('tip_angle', required=False),
         peck=parse_length(t.get('peck') or 0) or 0.0,
         peck_retract=parse_length(t.get('peck_retract') or 0) or 0.0,
+        tool_number=int(float(t['tool_number'])) if t.get('tool_number') not in (None, '') else None,
     )
+    if tool.tool_number is not None and not 1 <= tool.tool_number <= 999:
+        raise ValueError(f'Tool {tool_id}: tool number must be 1 to 999')
     if ttype == 'endmill':
         missing = [k for k in ('feed_rate', 'ramp_feed_rate', 'stepdown') if getattr(tool, k) is None]
         if missing:
@@ -229,15 +241,27 @@ def tool_from_dict(tool_id: str, t: dict) -> Tool:
     return tool
 
 
-_BASE_CONFIG: Optional['ShopConfig'] = None
+_BASE_CONFIGS: Dict[Optional[str], 'ShopConfig'] = {}
 _LIBRARY_CACHE: Dict[str, Tuple['ShopConfig', List[str]]] = {}
 
 
-def base_config() -> 'ShopConfig':
-    global _BASE_CONFIG
-    if _BASE_CONFIG is None:
-        _BASE_CONFIG = load_config()
-    return _BASE_CONFIG
+def machine_configs() -> List['ShopConfig']:
+    """Every machine's settings, in MACHINE_FILES order (the shop's first)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return [load_config(os.path.join(here, name)) for name in MACHINE_FILES]
+
+
+def base_config(machine: Optional[str] = None) -> 'ShopConfig':
+    """A machine's settings by id (`machine.id` in its file); None = the default machine."""
+    if machine not in _BASE_CONFIGS:
+        if machine is None:
+            _BASE_CONFIGS[None] = load_config()
+        else:
+            found = [c for c in machine_configs() if c.machine_id == machine]
+            if not found:
+                raise ValueError(f'Unknown machine {machine!r}')
+            _BASE_CONFIGS[machine] = found[0]
+    return _BASE_CONFIGS[machine]
 
 
 def config_with_tools(library: Optional[list], base: Optional['ShopConfig'] = None) -> Tuple['ShopConfig', List[str]]:
@@ -245,7 +269,9 @@ def config_with_tools(library: Optional[list], base: Optional['ShopConfig'] = No
     with the same id as a built-in one replaces it. Rows that don't make a valid tool are
     skipped with a warning instead of breaking the job."""
     base = base or base_config()
-    rows = [dict(r) for r in (library or []) if r and r.get('active', True) is not False]
+    # Only this machine's bits (rows saved before machines existed belong to the shop's).
+    rows = [dict(r) for r in (library or []) if r and r.get('active', True) is not False
+            and (r.get('machine') or 'shop') == base.machine_id]
     if not rows:
         return base, []
     import json
@@ -271,11 +297,33 @@ def config_with_tools(library: Optional[list], base: Optional['ShopConfig'] = No
     return cfg, warnings
 
 
+def _merged(base: dict, over: dict) -> dict:
+    """`over` on top of `base`, key by key; `tools` is replaced whole (bits are per machine)."""
+    out = dict(base)
+    for key, value in over.items():
+        if key == 'extends':
+            continue
+        if key != 'tools' and isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merged(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
 def load_config(path: Optional[str] = None, data: Optional[dict] = None) -> ShopConfig:
-    """Read roscam_config.yaml (or an already-parsed dict) into a ShopConfig."""
+    """Read roscam_config.yaml (or an already-parsed dict) into a ShopConfig.
+
+    A file with `extends: <other file>` starts from that file's settings and changes only
+    what it lists (machine, tools, ... ; `tools` is replaced whole).
+    """
     if data is None:
-        with open(path or DEFAULT_CONFIG_PATH, 'r', encoding='utf-8') as fh:
+        path = path or DEFAULT_CONFIG_PATH
+        with open(path, 'r', encoding='utf-8') as fh:
             data = yaml.safe_load(fh)
+    if data.get('extends'):
+        parent = os.path.join(os.path.dirname(os.path.abspath(path or DEFAULT_CONFIG_PATH)), data['extends'])
+        with open(parent, 'r', encoding='utf-8') as fh:
+            data = _merged(yaml.safe_load(fh), data)
 
     m = data['machine']
     s = data.get('setup', {})
@@ -341,7 +389,18 @@ def load_config(path: Optional[str] = None, data: Optional[dict] = None) -> Shop
         tabs_enabled=bool(tabs.get('enabled', True)),
         remove_tabs=bool(tabs.get('remove_tabs', False)),
         cut_gap=_length(s.get('cut_gap', 0.25), 'setup cut_gap'),
+        machine_id=str(m.get('id', 'shop')),
+        machine_label=str(m.get('label') or m.get('name', 'CNC router')),
+        post=str(m.get('post', 'richauto')),
+        tool_changes=str(m.get('tool_changes', 'per_file')),
+        file_extension=str(m.get('file_extension', 'nc')).lstrip('.'),
     )
+    if cfg.post not in ('richauto', 'avid_ex'):
+        raise ValueError(f'machine.post must be richauto or avid_ex, not {cfg.post!r}')
+    if cfg.tool_changes not in ('per_file', 'in_file'):
+        raise ValueError(f'machine.tool_changes must be per_file or in_file, not {cfg.tool_changes!r}')
+    if cfg.post == 'avid_ex' and cfg.tool_changes != 'in_file':
+        raise ValueError('The avid_ex post writes every bit into one file: set machine.tool_changes: in_file')
     if cfg.cut_gap < 0:
         raise ValueError('setup.cut_gap cannot be negative')
     if cfg.stock_margin <= cfg.profile_tool.diameter / 2:
@@ -759,6 +818,10 @@ class JobResult:
     cut_region: List[Tuple[float, float]] = field(default_factory=list)  # what to mark as used after cutting
     parts: List[dict] = field(default_factory=list)   # nested jobs: one entry per placed copy
     unplaced: List[str] = field(default_factory=list)
+    machine: str = 'shop'
+    # Machines that take every bit in one file (tool_changes: in_file): that file.
+    combined_name: str = ''
+    combined_text: str = ''
 
     def to_dict(self) -> dict:
         return {
@@ -774,13 +837,18 @@ class JobResult:
             'hole_groups': [g.to_dict() for g in self.hole_groups],
             'programs': [p.to_dict() for p in self.programs],
             'setup_sheet': self.setup_sheet, 'errors': self.errors, 'warnings': self.warnings,
+            'machine': self.machine,
+            'combined': {'name': self.combined_name, 'text': self.combined_text} if self.combined_name else None,
         }
 
     def zip_bytes(self) -> bytes:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for p in self.programs:
-                zf.writestr(p.filename, p.gcode)
+            if self.combined_name:
+                zf.writestr(self.combined_name, self.combined_text)
+            else:
+                for p in self.programs:
+                    zf.writestr(p.filename, p.gcode)
             zf.writestr(f'00_{self.part_name}_SETUP.txt', self.setup_sheet)
         return buf.getvalue()
 
@@ -1109,8 +1177,7 @@ def generate_job(dxf_path: str, material: str, thickness, cfg: Optional[ShopConf
         result.errors.extend(p_err)
         result.warnings.extend(p_warn)
 
-    result.setup_sheet = build_setup_sheet(result, cfg, timestamp)
-    result.success = not result.errors
+    _finish(result, cfg, timestamp)
     return result
 
 
@@ -1126,6 +1193,21 @@ def _perimeter_circle(pp: FRCPostProcessor):
     if abs(biggest['diameter'] - w) < 0.001 and abs(biggest['diameter'] - h) < 0.001:
         return biggest
     return None
+
+
+def _finish(result: JobResult, cfg: ShopConfig, timestamp: str) -> None:
+    """Machine-specific last step: the single file for in_file machines, then the setup sheet."""
+    result.machine = cfg.machine_id
+    if cfg.tool_changes == 'in_file' and result.programs and not result.errors:
+        from roscam_post import PostError, avid_ex
+        try:
+            result.combined_text = avid_ex(result.part_name, result.programs, result.stock_size,
+                                           result.thickness, cfg.safe_height)
+            result.combined_name = f'{result.part_name}.{cfg.file_extension}'
+        except PostError as e:
+            result.errors.append(str(e))
+    result.setup_sheet = build_setup_sheet(result, cfg, timestamp)
+    result.success = not result.errors
 
 
 def build_setup_sheet(result: JobResult, cfg: ShopConfig, timestamp: str) -> str:
@@ -1165,15 +1247,24 @@ def build_setup_sheet(result: JobResult, cfg: ShopConfig, timestamp: str) -> str
         lines.append(f'  {g.count:3d} x {g.diameter:.4f}"  ->  {how}' + (f'   ({g.note})' if g.note else ''))
     if not result.hole_groups:
         lines.append('  none')
-    lines += ['', 'Run order:']
-    for p in result.programs:
-        lines += [
-            f'  {p.index}. Load the {p.tool.name}.',
-            f'     Zero Z on top of the stock.',
-            f'     Run {p.filename}  ({p.feature_summary}, {p.tool.spindle_speed} RPM)',
-        ]
-    lines += ['', 'Convert each .nc file with the PartsTracker /cnc page before running it.',
-              'Dry-run above the stock first if anything looks unfamiliar.']
+    if cfg.tool_changes == 'in_file':
+        file = result.combined_name or f'{result.part_name}.{cfg.file_extension}'
+        lines += ['', f'Machine:  {cfg.machine_name}', '', f'Run {file}: one file for every bit.',
+                  'It stops before each bit; load it and let the tool setter measure it:']
+        for p in result.programs:
+            t = f'T{p.tool.tool_number}' if p.tool.tool_number is not None else 'T?'
+            lines.append(f'  {p.index}. {t} {p.tool.name}  ({p.feature_summary}, {p.tool.spindle_speed} RPM)')
+        lines += ['', 'Dry-run above the stock first if anything looks unfamiliar.']
+    else:
+        lines += ['', 'Run order:']
+        for p in result.programs:
+            lines += [
+                f'  {p.index}. Load the {p.tool.name}.',
+                f'     Zero Z on top of the stock.',
+                f'     Run {p.filename}  ({p.feature_summary}, {p.tool.spindle_speed} RPM)',
+            ]
+        lines += ['', 'Convert each .nc file with the PartsTracker /cnc page before running it.',
+                  'Dry-run above the stock first if anything looks unfamiliar.']
     if result.warnings:
         lines += ['', 'Warnings:'] + [f'  - {w}' for w in result.warnings]
     return '\n'.join(lines) + '\n'
@@ -1674,8 +1765,7 @@ def generate_sheet_job(parts: List[PartFile], placements: List[dict], material: 
             'footprint': [list(p) for p in _coords(outline.buffer(slot + gap / 2))],
             'cut_region': [list(p) for p in _coords(outline.buffer(slot))],
         })
-    result.setup_sheet = build_setup_sheet(result, cfg, timestamp)
-    result.success = not result.errors
+    _finish(result, cfg, timestamp)
     return result
 
 
@@ -1688,12 +1778,20 @@ def _tool_row(t: Tool, builtin: bool) -> dict:
             'overall_length': t.overall_length, 'flutes': t.flutes, 'spindle_speed': t.spindle_speed,
             'feed_rate': t.feed_rate, 'plunge_rate': t.plunge_rate, 'ramp_feed_rate': t.ramp_feed_rate,
             'stepdown': t.stepdown, 'tip_angle': t.tip_angle, 'peck': t.peck, 'peck_retract': t.peck_retract,
-            'builtin': builtin}
+            'tool_number': t.tool_number, 'builtin': builtin}
 
 
-def web_options(cfg: Optional[ShopConfig] = None, tools: Optional[list] = None) -> dict:
-    """What the web page needs to build its menus."""
-    base = cfg or base_config()
+def _machine_row(c: ShopConfig) -> dict:
+    return {'id': c.machine_id, 'label': c.machine_label, 'name': c.machine_name, 'controller': c.controller,
+            'post': c.post,
+            'tool_changes': c.tool_changes, 'file_extension': c.file_extension,
+            'x_max': c.x_max, 'y_max': c.y_max}
+
+
+def web_options(cfg: Optional[ShopConfig] = None, tools: Optional[list] = None,
+                machine: Optional[str] = None) -> dict:
+    """What the web page needs to build its menus, for one machine (default: the shop's)."""
+    base = cfg or base_config(machine)
     cfg, tool_warnings = config_with_tools(tools, base)
     return {
         'tools': [_tool_row(t, t.id in base.tools and t is base.tools[t.id]) for t in
@@ -1705,14 +1803,15 @@ def web_options(cfg: Optional[ShopConfig] = None, tools: Optional[list] = None) 
         'drills': [{'id': d.id, 'name': d.name, 'diameter': d.diameter} for d in cfg.drills],
         'endmill': {'id': cfg.profile_tool.id, 'name': cfg.profile_tool.name,
                     'diameter': cfg.profile_tool.diameter},
-        'machine': {'name': cfg.machine_name, 'x_max': cfg.x_max, 'y_max': cfg.y_max},
+        'machine': _machine_row(cfg),
+        'machines': [_machine_row(c) for c in machine_configs()],
     }
 
 
 def web_generate(dxf_bytes: bytes, filename: str, material: str, thickness: str,
                  overrides: Optional[Dict[str, str]] = None, rotation: int = 0,
                  cfg: Optional[ShopConfig] = None, sheet: Optional[dict] = None,
-                 placement=None) -> dict:
+                 placement=None, machine: Optional[str] = None) -> dict:
     """Run a job from an uploaded DXF and return everything the page shows, as JSON-able data."""
     import base64
     import tempfile
@@ -1722,7 +1821,8 @@ def web_generate(dxf_bytes: bytes, filename: str, material: str, thickness: str,
         with open(path, 'wb') as fh:
             fh.write(bytes(dxf_bytes))
         try:
-            res = generate_job(path, material, thickness, cfg, overrides or {}, int(rotation), part_name=part,
+            res = generate_job(path, material, thickness, cfg or base_config(machine), overrides or {},
+                               int(rotation), part_name=part,
                                sheet=Sheet.from_dict(sheet) if sheet else None,
                                placement=tuple(placement) if placement else None)
         except Exception as e:  # unreadable DXF etc: report it instead of crashing the page
@@ -1733,16 +1833,18 @@ def web_generate(dxf_bytes: bytes, filename: str, material: str, thickness: str,
         d['gcode'] = p.gcode
         d['tool_type'] = p.tool.type
         d['tool_diameter'] = p.tool.diameter
+        d['tool_number'] = p.tool.tool_number
     out['zip_name'] = f'{res.part_name}_roscam.zip'
     out['zip_base64'] = base64.b64encode(res.zip_bytes()).decode('ascii') if res.success else ''
     return out
 
 
 def web_part_info(dxf_bytes: bytes, filename: str, material: str, thickness: str,
-                  cfg: Optional[ShopConfig] = None, tools: Optional[list] = None) -> dict:
+                  cfg: Optional[ShopConfig] = None, tools: Optional[list] = None,
+                  machine: Optional[str] = None) -> dict:
     """Outline, nesting shape and holes of one uploaded DXF."""
     import tempfile
-    cfg, _ = config_with_tools(tools, cfg or base_config())
+    cfg, _ = config_with_tools(tools, cfg or base_config(machine))
     name = sanitize_filename_base(os.path.splitext(os.path.basename(filename or 'part.dxf'))[0], 'part')
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, 'part.dxf')
@@ -1751,19 +1853,20 @@ def web_part_info(dxf_bytes: bytes, filename: str, material: str, thickness: str
         return part_info(path, name, material, thickness, cfg)
 
 
-def web_nest_setup(sheet: dict, cfg: Optional[ShopConfig] = None, tools: Optional[list] = None) -> dict:
-    cfg, _ = config_with_tools(tools, cfg or base_config())
+def web_nest_setup(sheet: dict, cfg: Optional[ShopConfig] = None, tools: Optional[list] = None,
+                   machine: Optional[str] = None) -> dict:
+    cfg, _ = config_with_tools(tools, cfg or base_config(machine))
     return nest_setup(Sheet.from_dict(sheet), cfg)
 
 
 def web_generate_sheet(files: list, material: str, thickness: str, sheet: dict, placements: list,
                        overrides: Optional[Dict[str, str]] = None, unplaced: Optional[list] = None,
                        cfg: Optional[ShopConfig] = None, job_name: Optional[str] = None,
-                       tools: Optional[list] = None) -> dict:
+                       tools: Optional[list] = None, machine: Optional[str] = None) -> dict:
     """Programs for a nested layout. files: [{'name', 'bytes'}] in part-index order."""
     import base64
     import tempfile
-    cfg, tool_warnings = config_with_tools(tools, cfg or base_config())
+    cfg, tool_warnings = config_with_tools(tools, cfg or base_config(machine))
     with tempfile.TemporaryDirectory() as tmp:
         parts = []
         for i, f in enumerate(files):
@@ -1784,6 +1887,7 @@ def web_generate_sheet(files: list, material: str, thickness: str, sheet: dict, 
         d['gcode'] = p.gcode
         d['tool_type'] = p.tool.type
         d['tool_diameter'] = p.tool.diameter
+        d['tool_number'] = p.tool.tool_number
     out['zip_name'] = f'{res.part_name}_roscam.zip'
     out['zip_base64'] = base64.b64encode(res.zip_bytes()).decode('ascii') if res.success else ''
     return out
@@ -1802,11 +1906,12 @@ def main(argv=None) -> int:
     ap.add_argument('--zip', action='store_true', help='Write one .zip instead of separate files')
     ap.add_argument('--rotate', type=int, default=0, choices=[0, 90, 180, 270])
     ap.add_argument('--config', default=None, help='Path to roscam_config.yaml')
+    ap.add_argument('--machine', default=None, help='Machine id from MACHINE_FILES, e.g. shop or avid')
     ap.add_argument('--hole', action='append', default=[], metavar='DIA=TOOL',
                     help='Override a hole size, e.g. --hole 0.2031=mill or --hole 0.1600=drill_5_32')
     args = ap.parse_args(argv)
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config) if args.config or not args.machine else base_config(args.machine)
     overrides = {}
     for spec in args.hole:
         dia, _, tool = spec.partition('=')
@@ -1831,6 +1936,12 @@ def main(argv=None) -> int:
         with open(path, 'wb') as fh:
             fh.write(res.zip_bytes())
         print(f'Wrote {path}')
+    elif res.combined_name:
+        with open(os.path.join(out, res.combined_name), 'w', encoding='ascii', newline='') as fh:
+            fh.write(res.combined_text)
+        print(f'Wrote {res.combined_name}')
+        with open(os.path.join(out, f'00_{res.part_name}_SETUP.txt'), 'w', encoding='ascii') as fh:
+            fh.write(res.setup_sheet)
     else:
         for p in res.programs:
             with open(os.path.join(out, p.filename), 'w', encoding='ascii') as fh:

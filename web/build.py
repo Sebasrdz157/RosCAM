@@ -21,7 +21,7 @@ WEB_FILES = ['index.html', 'roscam.css', 'app.js', 'worker.js', 'viewer.js', 'co
              'sheets.js', 'tools.js', 'logo.png', 'converter.js']
 NEST_FILES = ['nest-worker.js', 'nester.js', 'clipper.js', 'geometryutil.js', 'LICENSE-SVGnest.txt']
 PY_FILES = ['roscam.py', 'frc_cam_postprocessor.py', 'team_config.py', 'gcode_hygiene.py',
-            'dxf_geometry.py', 'roscam_config.yaml']
+            'dxf_geometry.py', 'roscam_post.py', 'roscam_config.yaml', 'roscam_config_avid.yaml']
 
 
 def build_version():

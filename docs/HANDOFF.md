@@ -49,6 +49,49 @@ merging deploys production). The export refuses if `converter/src/gcode` and Par
 `src/gcode` differ: run `converter/sync.sh ../PartsTracker` first. GitHub Pages still
 publishes a standalone copy from `main`. Building needs Rust + `rustup target add wasm32-unknown-unknown`.
 
+## Machines (decided 2026-11-18)
+
+RosCAM makes programs for more than one CNC; the top bar's machine menu picks one (remembered
+per browser). Each machine is one settings file in `MACHINE_FILES` (`roscam.py`):
+
+| | Shop: Axiom (Richauto) | Home: Avid PRO4848 (Centroid), a mentor's |
+|---|---|---|
+| File | `roscam_config.yaml` (`id: shop`) | `roscam_config_avid.yaml` (`id: avid`, `extends: roscam_config.yaml`) |
+| Output | one `.nc` per bit, converted to `.mmg` in the browser | one `.cnc` with every bit (`T# M6`), written by `roscam_post.py` |
+| Bit changes | operator swaps the bit, re-zeros Z per file | controller pauses before each bit; tool setter measures it |
+| Spindle | set by hand | VFD takes the `S` word |
+
+- Same zero on both: X0 Y0 lower-left of the stock, Z0 on top. Same materials, tabs, margins
+  (the Avid file inherits them). **Sheets are shared**: the mentor takes shop sheets home, so the
+  Sheets inventory and nesting work the same on both machines.
+- **Bits are per machine.** Built-in bits come from the machine's file; library bits (Firestore
+  `roscam_tools`) carry `machine` (missing = `shop`) and, for the Avid, a required
+  `tool_number`. The server keys non-shop bits as `<machine>__<id>`; PATCH/DELETE take `?machine=`.
+  The engine only ever uses the chosen machine's bits (`config_with_tools` filters rows).
+- **The Avid post** copies the Vectric "Avid EX Controllers, Ver 1.2" post: N numbers in steps
+  of 10, `;` comments, CRLF, inches, `G53 Z0` home moves, `T# M6` + `M3  S####` blocks, only
+  changed axes on G0/G1, X Y I J on arcs, F on the first feed after a rapid and on change.
+  `tests/test_roscam_post.py` replays his real files (`tests/fixtures/avid/`) through it: every
+  move identical except where Vectric repeats an axis that rounds to the same 4-decimal value.
+- His bits and numbers in `roscam_config_avid.yaml` were read from his files (T5 1/4" 3-flute,
+  T2 1/8"); he should check them. More machines: add a file to `MACHINE_FILES` (and to
+  `PY_FILES` in `web/build.py` and `web/worker.js`).
+
+## Next task: vise / tube work on the Avid (planned, not started)
+
+The mentor holds stock in a vise, mainly 2x1 aluminum tube for custom cutouts (not limited to
+that), and wants a Fusion-like check that the toolpath won't hit the vise. Plan:
+1. Setup type "Vise" (Avid only at first) next to "Sheet": a vise library (jaw width/height,
+   fixed jaw position, body box, parallels height; later an STL from Onshape) and stock
+   (tube: outside size, wall, length; or bar/block). Zero at the fixed-jaw corner, Z0 on top.
+2. One DXF per face (sketch on the tube face in Onshape) = one setup; through-cuts go through
+   the top wall only (wall + small overcut), never into the far wall or the vise.
+3. Collision check of every move (rapids included) for the cutter and the holder/collet against
+   jaws, body and parallels; downloads blocked with the place named ("hits the fixed jaw at
+   X.. Y.."); vise and tube drawn in the 3D simulation with the collision point in red.
+4. Later: STL vises, several faces of one tube in one session.
+Needs from him: vise model or jaw width/height/body size, parallels, how he zeros on the vise.
+
 ## What exists
 
 - **CAM engine** `roscam.py` on top of PenguinCAM (`frc_cam_postprocessor.py`, MIT, Team 6238):

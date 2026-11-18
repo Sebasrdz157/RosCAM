@@ -14,7 +14,11 @@ for milled holes, pockets and the outline with tabs) plus a setup sheet.
 - `roscam.py` - the RosCAM job builder and CLI. Uses `FRCPostProcessor` for geometry,
   pocketing and tabs; adds the tool library, hole-to-drill matching, per-tool programs,
   stock-top Z zero, G83 expansion, and preflight checks.
-- `roscam_config.yaml` - machine, tool library, materials/thicknesses and tab sizes.
+- `roscam_config.yaml` - the shop machine, tool library, materials/thicknesses and tab sizes;
+  `roscam_config_avid.yaml` - a mentor's Avid PRO4848 (`extends:` the shop file; its own bits).
+  `MACHINE_FILES` in `roscam.py` lists the machines; every web call names one.
+- `roscam_post.py` - the Avid EX (Centroid) post: every bit in one `.cnc` with `T# M6` changes.
+  It emits G-code, so it goes through `finalize_gcode()` and is in `GCODE_SOURCES`.
 - `tests/test_roscam.py` - RosCAM tests; `tests/fixtures/make_roscam_plate.py` builds the test plate.
 - `web/` - the static web app (runs roscam.py in the browser via Pyodide); `web/nest/` - nesting
   engine adapted from SVGnest (MIT; keep its license file and headers); `web/db.js` - sheet
